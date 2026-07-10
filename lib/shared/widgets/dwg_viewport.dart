@@ -1268,6 +1268,10 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
       duration: const Duration(milliseconds: 420),
     )..addListener(_onFocusTick);
     _loadAnnotations(widget.initialAnnotations);
+    // First settled frame → first gesture snapshot.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _scheduleFreeze();
+    });
   }
 
   // Saved shapes are restored once (model coords, so they line up after reopen).
@@ -1325,6 +1329,9 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
         _focusHighlight = null;
       }
     });
+    // Focus/restore animation finished → the next frame is full quality;
+    // snapshot it for the next gesture.
+    if (c.isCompleted) _scheduleFreeze();
   }
 
   // Smoothly centre [m] (model coords) so [span] model units fit the view.
@@ -1518,6 +1525,15 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
       _fitBounds = null;
       _frozen?.dispose();
       _frozen = null;
+    }
+    // Appearance changed (layer toggled, colours, lineweights) or a new scene
+    // arrived: the next full-quality frame differs — re-snapshot it.
+    if (!identical(oldWidget.scene, widget.scene) ||
+        !setEquals(oldWidget.hiddenLayers, widget.hiddenLayers) ||
+        oldWidget.monochrome != widget.monochrome ||
+        oldWidget.backgroundIsWhite != widget.backgroundIsWhite ||
+        oldWidget.showLineWeights != widget.showLineWeights) {
+      _scheduleFreeze();
     }
   }
 
@@ -1891,8 +1907,6 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
   @override
   Widget build(BuildContext context) {
     final devicePixelRatio = MediaQuery.devicePixelRatioOf(context);
-    // Refresh the gesture snapshot once this (settled) frame is on screen.
-    if (!_interacting) _scheduleFreeze();
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1951,6 +1965,7 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
                 _offset = Offset.zero;
               }
             });
+            _scheduleFreeze();
           },
           onScaleStart: (details) {
             if (widget.exportSelectMode) {
@@ -2050,6 +2065,11 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
             _dragCandidate = (-1, -1);
             _loupeModel = null; // hide the magnifier when the drag ends
             if (_interacting) setState(() => _interacting = false);
+            // The settled full-quality frame paints now; snapshot it for the
+            // next gesture. (Captures are event-driven — gesture end, focus
+            // end, view/appearance change — never per-build, so the GPU isn't
+            // saturated with readbacks.)
+            _scheduleFreeze();
             if (wasDragging) _persistAnnotations(); // a point was moved → save
           },
           child: Stack(
