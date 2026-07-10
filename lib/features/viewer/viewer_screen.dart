@@ -63,10 +63,10 @@ class _ViewerScreenState extends State<ViewerScreen> {
   String _unit = 'u'; // measurement unit label
 
   // What ONE raw model unit represents ($INSUNITS code: 4=mm, 5=cm, 6=m).
-  // DWG headers lie about this constantly (they say mm while the model is
-  // really cm), so we DON'T trust the header — we default to cm (the unit
-  // these architectural drawings are actually drawn in) and let the user flip
-  // it in Settings for the rare mm/m drawing. Every mm/cm/m readout follows.
+  // DWG headers often lie about this (the untouched AutoCAD default says mm
+  // while the model is really cm), so mm/unitless headers are NOT trusted and
+  // fall back to cm. A header explicitly set to cm or m is adopted on load
+  // (see _prepareRenderer); the user can flip it in Settings either way.
   int _modelUnit = 5; // cm
 
   // Draw each layer at its DWG lineweight (thick walls etc.) vs. a uniform
@@ -195,6 +195,12 @@ class _ViewerScreenState extends State<ViewerScreen> {
     if (!mounted) return;
     setState(() {
       _renderState = state;
+      // Adopt the header's $INSUNITS only when it explicitly says cm or m —
+      // someone set those on purpose. mm/unitless is usually the untouched
+      // AutoCAD template default on a model really drawn in cm, so those keep
+      // the cm assumption (user can still flip it in Settings).
+      final hdrUnits = state.scene?.insUnits ?? 0;
+      if (hdrUnits == 5 || hdrUnits == 6) _modelUnit = hdrUnits;
       _hiddenLayers.clear();
       final layers = state.scene?.layers ?? const [];
       for (var i = 0; i < layers.length; i++) {

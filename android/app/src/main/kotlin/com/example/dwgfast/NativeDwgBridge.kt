@@ -26,13 +26,33 @@ class NativeDwgBridge(private val context: Context) {
         }
         // The native side writes the packed scene directly to a file so the
         // multi-MB payload never crosses the platform channel (OOM-safe).
-        val sceneFile = File(context.filesDir, "last_scene.bin")
+        // One scene file PER DRAWING (keyed by the input copy's path) so a
+        // queued parse of the next file can never overwrite a scene the
+        // previous screen is still reading.
+        val sceneKey = Integer.toHexString(localFile.absolutePath.hashCode())
+        val sceneFile = File(context.filesDir, "scene_$sceneKey.bin")
         // Guard the native call: any Java-level failure (link error, etc.) is
         // turned into a clean "unsupported" result instead of crashing.
         val wrote = try {
             nativePrepareDrawing(localFile.absolutePath, name, sceneFile.absolutePath)
         } catch (error: Throwable) {
             false
+        }
+
+        // Scenes are tens of MB, so per-drawing naming must not grow storage
+        // unbounded: keep only the newest few and drop the rest (plus the
+        // legacy shared last_scene.bin). A reader that already opened a
+        // deleted file keeps reading it fine (POSIX unlink semantics).
+        if (wrote) {
+            File(context.filesDir, "last_scene.bin").delete()
+            context.filesDir
+                .listFiles { f ->
+                    f.name.startsWith("scene_") && f.name.endsWith(".bin") &&
+                        f.name != sceneFile.name
+                }
+                ?.sortedByDescending { it.lastModified() }
+                ?.drop(2)
+                ?.forEach { it.delete() }
         }
 
         // Binary header: u32 magic, u32 errorFlag (little-endian). errorFlag == 0

@@ -96,7 +96,20 @@ class DwgScene {
   }
 
   /// Parses the packed little-endian buffer produced by `fastdwg_native.cpp`.
+  /// A truncated or corrupt buffer (app killed mid-write, cache eviction)
+  /// yields an empty scene instead of throwing, so callers fall back to
+  /// re-parsing the DWG rather than crashing.
   factory DwgScene.fromBytes(Uint8List bytes) {
+    try {
+      return DwgScene._parse(bytes);
+    } on RangeError {
+      return DwgScene.empty();
+    } on ArgumentError {
+      return DwgScene.empty();
+    }
+  }
+
+  static DwgScene _parse(Uint8List bytes) {
     if (bytes.length < 8) return DwgScene.empty();
     final bd = ByteData.sublistView(bytes);
     var o = 0;
@@ -114,6 +127,7 @@ class DwgScene {
     o += 16;
     final vlen = bd.getUint16(o, Endian.little);
     o += 2;
+    if (o + vlen > bytes.length) return DwgScene.empty();
     final version = utf8.decode(bytes.sublist(o, o + vlen), allowMalformed: true);
     o += vlen;
     final insUnits = bd.getUint16(o, Endian.little);
@@ -128,6 +142,7 @@ class DwgScene {
     for (var i = 0; i < layerCount; i++) {
       final nl = bd.getUint16(o, Endian.little);
       o += 2;
+      if (o + nl + 7 > bytes.length) return DwgScene.empty();
       final name = utf8.decode(bytes.sublist(o, o + nl), allowMalformed: true);
       o += nl;
       final rgb = bd.getUint32(o, Endian.little);
@@ -159,6 +174,9 @@ class DwgScene {
     final lineCount = bd.getUint32(o, Endian.little);
     o += 4;
     const lineStride = 22; // 4×f32 + u32 color + u16 layer
+    // Validate the section fits BEFORE sizing lists from the count — a corrupt
+    // count would otherwise request a multi-GB allocation.
+    if (o + lineCount * lineStride > bytes.length) return DwgScene.empty();
     // First pass: count segments per (layer,color) so each list is sized exactly.
     final groupCounts = <int, int>{};
     var scan = o;
@@ -198,6 +216,7 @@ class DwgScene {
     // ── Circles ──
     final circleCount = bd.getUint32(o, Endian.little);
     o += 4;
+    if (o + circleCount * 18 > bytes.length) return DwgScene.empty();
     final circleCoords = Float32List(circleCount * 3);
     final circleColors = Int32List(circleCount);
     final circleLayers = Int32List(circleCount);
@@ -222,6 +241,7 @@ class DwgScene {
     o += 4;
     final texts = <DwgText>[];
     for (var i = 0; i < textCount; i++) {
+      if (o + 25 > bytes.length) return DwgScene.empty();
       final x = bd.getFloat32(o, Endian.little);
       final y = bd.getFloat32(o + 4, Endian.little);
       final h = bd.getFloat32(o + 8, Endian.little);
@@ -231,6 +251,7 @@ class DwgScene {
       final l = bd.getUint16(o + 21, Endian.little);
       final len = bd.getUint16(o + 23, Endian.little);
       o += 25;
+      if (o + len > bytes.length) return DwgScene.empty();
       final value = utf8.decode(bytes.sublist(o, o + len), allowMalformed: true);
       o += len;
       texts.add(DwgText(
@@ -251,6 +272,7 @@ class DwgScene {
     o += 4;
     final fills = <DwgFill>[];
     for (var i = 0; i < fillCount; i++) {
+      if (o + 8 > bytes.length) return DwgScene.empty();
       final c = bd.getUint32(o, Endian.little);
       final l = bd.getUint16(o + 4, Endian.little);
       final numLoops = bd.getUint16(o + 6, Endian.little);
@@ -260,8 +282,10 @@ class DwgScene {
       var fminX = double.infinity, fminY = double.infinity;
       var fmaxX = -double.infinity, fmaxY = -double.infinity;
       for (var j = 0; j < numLoops; j++) {
+        if (o + 4 > bytes.length) return DwgScene.empty();
         final np = bd.getUint32(o, Endian.little);
         o += 4;
+        if (o + np * 8 > bytes.length) return DwgScene.empty();
         final loop = Float32List(np * 2);
         for (var k = 0; k < np; k++) {
           final px = bd.getFloat32(o, Endian.little);

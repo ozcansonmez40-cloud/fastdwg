@@ -558,11 +558,6 @@ static inline void put_u8(std::ostringstream& o, uint8_t v) {
   o.write(reinterpret_cast<const char*>(&v), 1);
 }
 
-// DEBUG: per-fixedtype segment tally for a target world box (the meeting table),
-// to pin which entity type floods a region with micro-segments.
-static int g_cur_ft = 0;
-static std::map<int, long> g_dbg_tbl;
-static std::string g_dbg_title;
 static void append_line_solid(std::ostringstream& j,
                               double x1, double y1, double x2, double y2,
                               uint32_t color, int& count) {
@@ -571,8 +566,6 @@ static void append_line_solid(std::ostringstream& j,
   put_u32(j, color);
   put_u16(j, g_cur_layer);
   ++count;
-  const double mx = (x1 + x2) * 0.5, my = (y1 + y2) * 0.5;
-  if (mx > 66940 && mx < 68440 && my > 1990 && my < 3800) ++g_dbg_tbl[g_cur_ft];
 }
 
 // Emits the segment, expanded into dashes when the current entity carries a
@@ -1748,7 +1741,6 @@ static void render_entity(
     const char* dx = dwg_object_get_dxfname(obj);
     ++g_dbg_reach_types[dx ? dx : "?"];
     g_cur_handle = (unsigned long long)obj->handle.value;
-    g_cur_ft = ft;
     g_rendered_handles.insert(g_cur_handle);
   }
   const uint32_t color = resolve_entity_color(obj);
@@ -1973,18 +1965,6 @@ static void render_entity(
     Dwg_Entity_MTEXT* mtext = dwg_object_to_MTEXT(obj);
     if (mtext && mtext->text) {
       std::string raw = dwg_text_to_utf8((const char*)mtext->text);
-      // DEBUG: capture the big-title MTEXT (dropped/truncated in the app).
-      if (g_dbg_title.size() < 4000) {
-        std::string U = raw;
-        for (char& c : U) c = (char)std::toupper((unsigned char)c);
-        if (U.find("MARL") != std::string::npos ||
-            U.find("ASARIM") != std::string::npos ||
-            U.find("K\xC3\x9CLT") != std::string::npos ||
-            U.find("YY") != std::string::npos ||
-            U.find("PROJES") != std::string::npos) {
-          g_dbg_title += "\nMTEXT raw=[" + raw + "]";
-        }
-      }
       if (!raw.empty()) {
         auto [tx,ty] = xform_pt(xf, mtext->ins_pt.x, mtext->ins_pt.y);
         double h_raw = safe_number(mtext->text_height, 0.0);
@@ -2629,9 +2609,6 @@ std::string parse_dwg_to_scene_json(const char* file_path, int* out_error) {
   g_timing += g_hatch_zero_log;
   for (const auto& [name, n] : g_dbg_wrong_types)
     g_timing += "\nwrong_type " + name + ": " + std::to_string(n);
-  for (const auto& [ft2, n] : g_dbg_tbl)
-    g_timing += "\ntable_ft " + std::to_string(ft2) + ": " + std::to_string(n);
-  g_timing += "\n=== TITLE MTEXT ===" + g_dbg_title;
   for (BITCODE_BS ci = 0; ci < dwg.num_classes && ci < 200; ++ci) {
     const Dwg_Class& kl = dwg.dwg_class[ci];
     std::string dxn = kl.dxfname ? std::string(kl.dxfname) : "?";
