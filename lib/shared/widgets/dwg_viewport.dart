@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show listEquals, setEquals;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 
 import '../../data/models/dwg_scene.dart';
 import '../../theme/app_colors.dart';
@@ -1166,6 +1167,70 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
   // Snap-to-geometry support. Index built lazily on first measure use.
   _SnapIndex? _snapIndex;
   bool _snapIndexBuilding = false;
+
+  // ── Gesture-time raster reuse ──
+  // Painting the full scene live during a pan/zoom costs a per-frame walk over
+  // every segment; fully zoomed out that's the whole drawing and frames blow
+  // past 16ms. Instead, after each settled full-quality frame the scene layer
+  // is snapshotted to an image; DURING a gesture the painter just transforms
+  // that snapshot (one drawImageRect) and the real geometry is repainted once
+  // when the finger lifts.
+  final GlobalKey _sceneKey = GlobalKey();
+  ui.Image? _frozen;
+  double _frozenScale = 1.0;
+  Offset _frozenOffset = Offset.zero;
+  Size _frozenSize = Size.zero;
+  int _frozenParams = 0; // appearance key the snapshot was taken under
+  bool _capturing = false;
+
+  int _appearanceKey() => Object.hash(
+        identityHashCode(widget.scene),
+        Object.hashAllUnordered(widget.hiddenLayers),
+        widget.monochrome,
+        widget.backgroundIsWhite,
+        widget.showLineWeights,
+      );
+
+  /// Snapshot the settled scene layer (post-frame; no-op while interacting or
+  /// when the current view already matches the stored snapshot).
+  void _scheduleFreeze() {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || _interacting || _capturing) return;
+      final params = _appearanceKey();
+      if (_frozen != null &&
+          _frozenScale == _scale &&
+          _frozenOffset == _offset &&
+          _frozenSize == Size(_canvasW, _canvasH) &&
+          _frozenParams == params) {
+        return;
+      }
+      final ro = _sceneKey.currentContext?.findRenderObject();
+      if (ro is! RenderRepaintBoundary) return;
+      _capturing = true;
+      // Remember the view the snapshot belongs to BEFORE the async gap.
+      final snapScale = _scale;
+      final snapOffset = _offset;
+      final snapSize = Size(_canvasW, _canvasH);
+      try {
+        final img = await ro.toImage(
+            pixelRatio: MediaQuery.of(context).devicePixelRatio);
+        if (!mounted) {
+          img.dispose();
+          return;
+        }
+        _frozen?.dispose();
+        _frozen = img;
+        _frozenScale = snapScale;
+        _frozenOffset = snapOffset;
+        _frozenSize = snapSize;
+        _frozenParams = params;
+      } catch (_) {
+        // Capture is best-effort; gestures just fall back to live painting.
+      } finally {
+        _capturing = false;
+      }
+    });
+  }
   // Tight bounds of the drawing's main content, for the fit button (cached).
   DwgBounds? _fitBounds;
   int _dragMeas = -1; // measurement being dragged
@@ -1240,6 +1305,7 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
   @override
   void dispose() {
     _focusCtl?.dispose();
+    _frozen?.dispose();
     super.dispose();
   }
 
@@ -1450,6 +1516,8 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
     if (!identical(oldWidget.scene, widget.scene)) {
       _snapIndex = null;
       _fitBounds = null;
+      _frozen?.dispose();
+      _frozen = null;
     }
   }
 
@@ -1823,6 +1891,8 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
   @override
   Widget build(BuildContext context) {
     final devicePixelRatio = MediaQuery.devicePixelRatioOf(context);
+    // Refresh the gesture snapshot once this (settled) frame is on screen.
+    if (!_interacting) _scheduleFreeze();
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1989,6 +2059,7 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
               // so moving a measurement point does NOT repaint the >1M-segment
               // geometry — only the light overlay above redraws.
               RepaintBoundary(
+                key: _sceneKey,
                 child: CustomPaint(
                   isComplex: true,
                   painter: _DwgScenePainter(
@@ -1998,10 +2069,21 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
                     devicePixelRatio: devicePixelRatio,
                     viewScale: _scale,
                     viewOffset: _offset,
-                    fast: _interacting,
+                    // Gestures AND the focus/restore animation ride the
+                    // snapshot; full quality returns on the settled frame.
+                    fast: _interacting || (_focusCtl?.isAnimating ?? false),
                     monochrome: widget.monochrome,
                     backgroundIsWhite: widget.backgroundIsWhite,
                     showLineWeights: widget.showLineWeights,
+                    // Snapshot reuse only when it matches the current look and
+                    // canvas — otherwise the painter falls back to live paint.
+                    frozen: (_frozen != null &&
+                            _frozenParams == _appearanceKey() &&
+                            _frozenSize == Size(_canvasW, _canvasH))
+                        ? _frozen
+                        : null,
+                    frozenScale: _frozenScale,
+                    frozenOffset: _frozenOffset,
                   ),
                   child: const SizedBox.expand(),
                 ),
@@ -2315,6 +2397,9 @@ class _DwgScenePainter extends CustomPainter {
     this.monochrome = false,
     this.backgroundIsWhite = false,
     this.showLineWeights = true,
+    this.frozen,
+    this.frozenScale = 1.0,
+    this.frozenOffset = Offset.zero,
   });
 
   final DwgScene scene;
@@ -2325,6 +2410,12 @@ class _DwgScenePainter extends CustomPainter {
   final Offset viewOffset;
   // True during an active gesture: trade quality for a lighter, smoother frame.
   final bool fast;
+  // Snapshot of the last settled frame + the view it was rendered at. During a
+  // gesture the painter transforms this image (one draw op) instead of walking
+  // millions of segments — zoomed-out pans stay at 60fps on huge drawings.
+  final ui.Image? frozen;
+  final double frozenScale;
+  final Offset frozenOffset;
   // Drawing-color = Black/White: force all geometry to one contrasting colour.
   final bool monochrome;
   // Background is white (vs black) — flips entity-colour adjustments.
@@ -2334,6 +2425,26 @@ class _DwgScenePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // Gesture frames: reproject the settled snapshot instead of live geometry.
+    final img = frozen;
+    if (fast && img != null) {
+      final t2 =
+          _computeTransform(size, scene.drawableBounds, viewScale, viewOffset);
+      final t1 = _computeTransform(
+          size, scene.drawableBounds, frozenScale, frozenOffset);
+      if (t1.ax != 0) {
+        final k = t2.ax / t1.ax;
+        final dx = t2.bx - k * t1.bx;
+        final dy = t2.by - k * t1.by;
+        canvas.drawImageRect(
+          img,
+          Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+          Rect.fromLTWH(dx, dy, size.width * k, size.height * k),
+          Paint()..filterQuality = FilterQuality.low,
+        );
+        return;
+      }
+    }
     // Model → screen affine, fitted to the current pan/zoom.
     final transform =
         _computeTransform(size, scene.drawableBounds, viewScale, viewOffset);
@@ -2363,7 +2474,10 @@ class _DwgScenePainter extends CustomPainter {
         oldDelegate.fast != fast ||
         oldDelegate.monochrome != monochrome ||
         oldDelegate.backgroundIsWhite != backgroundIsWhite ||
-        oldDelegate.showLineWeights != showLineWeights;
+        oldDelegate.showLineWeights != showLineWeights ||
+        !identical(oldDelegate.frozen, frozen) ||
+        oldDelegate.frozenScale != frozenScale ||
+        oldDelegate.frozenOffset != frozenOffset;
   }
 }
 
