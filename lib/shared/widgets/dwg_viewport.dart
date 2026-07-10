@@ -318,10 +318,12 @@ void _paintDwgScene(
     final dotLayers = scene.dotLayers;
     final dotPaint = Paint()
       ..strokeCap = StrokeCap.round
-      // Same weight as the hairline linework: AutoCAD draws DOT-linetype dots
-      // at the line's own width, so anything fatter reads as a beaded chain
-      // much heavier than the layer (2.0+ px looked "bold" next to thin walls).
-      ..strokeWidth = math.max(1.3, strokeWidth);
+      // Tied to the hairline width with NO absolute floor: the main viewport
+      // draws lines at 0.65 *physical* px, so a logical-px floor (2.0/1.3)
+      // rendered dots several times fatter than the linework on a high-DPI
+      // phone. ×3 ≈ 2 physical px: clearly visible as a dot, but still lighter
+      // than before (was ~4 px) and subordinate to solid walls, like AutoCAD.
+      ..strokeWidth = strokeWidth * 3.0;
     final byColor = <int, List<double>>{};
     for (var i = 0; i < dotColors.length; i++) {
       if (hiddenLayers.contains(dotLayers[i])) continue;

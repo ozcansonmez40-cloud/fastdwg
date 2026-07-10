@@ -91,15 +91,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _onBottomNavTap(int index) {
     switch (index) {
-      case 0: // Files → jump back to the top of the list
+      case 0: // Files → open the system file picker directly. The big "Open
+        // DWG File" button does the same, but from the bottom bar it works
+        // without scrolling back up — and the tab isn't a dead duplicate.
         setState(() => _selectedIndex = 0);
-        if (_scrollController.hasClients) {
-          _scrollController.animateTo(
-            0,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-          );
-        }
+        _openFile();
       case 1: // Recents → scroll the Recent Drawings panel into view
         setState(() => _selectedIndex = 1);
         final ctx = _recentsKey.currentContext;
