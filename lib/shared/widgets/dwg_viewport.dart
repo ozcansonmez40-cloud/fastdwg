@@ -11,6 +11,100 @@ import '../../theme/app_colors.dart';
 import 'blueprint_background.dart';
 import 'technical_chip.dart';
 
+/// Zoom-independent level-of-detail copies of a scene's line batches.
+///
+/// The painter chains consecutive sub-pixel segments into chords at paint
+/// time, but it still has to WALK every raw segment to do so — with the whole
+/// drawing on screen that's millions of iterations per frame and pan/zoom at
+/// extents feels heavy. This store runs the SAME chaining offline in model
+/// space at a couple of fixed thresholds (preserving stream order, which the
+/// chaining depends on) and the painter simply iterates the small pre-chained
+/// copy whenever one pixel spans at least that many model units.
+class _SceneLod {
+  final List<double> thresholds = []; // coarsest → finest, model units
+  final List<Map<int, Float32List>> tiers = [];
+  bool ready = false;
+  bool building = false;
+}
+
+final Expando<_SceneLod> _sceneLodStore = Expando<_SceneLod>();
+
+/// Builds the LOD tiers for [scene] once, chunked so the UI stays responsive.
+Future<void> ensureSceneLod(DwgScene scene) async {
+  final lod = _sceneLodStore[scene] ??= _SceneLod();
+  if (lod.ready || lod.building) return;
+  lod.building = true;
+  final b = scene.drawableBounds;
+  final span = math.max(b.width, b.height);
+  if (span <= 0 || scene.lineSegmentCount < 200000) {
+    // Small drawings paint fast anyway — skip the extra memory.
+    lod.building = false;
+    lod.ready = true;
+    return;
+  }
+  var sinceYield = 0;
+  Future<void> maybeYield() async {
+    if (++sinceYield >= 60000) {
+      sinceYield = 0;
+      await Future<void>.delayed(Duration.zero);
+    }
+  }
+
+  // ~0.4px at full extents on a phone; ~0.4px at 4× zoom. Finer views use the
+  // raw data (offscreen culling already keeps those frames cheap).
+  for (final t in [span / 2500.0, span / 10000.0]) {
+    final t2 = t * t;
+    final tier = <int, Float32List>{};
+    for (final e in scene.lineBatches.entries) {
+      final m = e.value;
+      final out = <double>[];
+      var chainX = double.nan, chainY = double.nan;
+      var prevX2 = double.nan, prevY2 = double.nan;
+      for (var i = 0; i + 3 < m.length; i += 4) {
+        final x1 = m[i], y1 = m[i + 1], x2 = m[i + 2], y2 = m[i + 3];
+        final gx = x1 - prevX2, gy = y1 - prevY2;
+        final continues = !chainX.isNaN &&
+            (gx * gx + gy * gy < t2 || (x1 == prevX2 && y1 == prevY2));
+        final sx = continues ? chainX : x1;
+        final sy = continues ? chainY : y1;
+        prevX2 = x2;
+        prevY2 = y2;
+        final dx = sx - x2, dy = sy - y2;
+        if (!(dx * dx + dy * dy >= t2)) {
+          chainX = sx;
+          chainY = sy;
+          await maybeYield();
+          continue;
+        }
+        chainX = double.nan;
+        out
+          ..add(sx)
+          ..add(sy)
+          ..add(x2)
+          ..add(y2);
+        await maybeYield();
+      }
+      tier[e.key] = Float32List.fromList(out);
+    }
+    lod.thresholds.add(t);
+    lod.tiers.add(tier);
+  }
+  lod.ready = true;
+  lod.building = false;
+}
+
+/// The coarsest pre-chained copy safe for the current zoom (chains up to
+/// [minModelLen] model units — at most ~one pixel on screen), or null to use
+/// the raw batch.
+Float32List? _lodPick(DwgScene scene, int key, double minModelLen) {
+  final lod = _sceneLodStore[scene];
+  if (lod == null || !lod.ready) return null;
+  for (var i = 0; i < lod.thresholds.length; i++) {
+    if (lod.thresholds[i] <= minModelLen) return lod.tiers[i][key];
+  }
+  return null;
+}
+
 /// Millimetres represented by ONE raw model unit, from the DWG header
 /// $INSUNITS. When the drawing is unitless (0) or an unknown code we fall back
 /// to millimetres, which was the previous fixed assumption.
@@ -233,8 +327,14 @@ void _paintDwgScene(
     return w < strokeWidth ? strokeWidth : (w > 4.0 ? 4.0 : w);
   }
 
-  scene.lineBatches.forEach((key, model) {
+  // Model-space length of the paint-time cull threshold: when a pre-chained
+  // LOD copy exists at (or below) this coarseness, iterate IT instead of the
+  // raw millions of segments — same visual result, a fraction of the work.
+  final minModelLen = ax.abs() <= 0 ? 0.0 : math.sqrt(minLenSq) / ax.abs();
+  scene.lineBatches.forEach((key, rawModel) {
     if (hiddenLayers.contains(DwgScene.batchLayer(key))) return;
+    final model = _lodPick(scene, key, minModelLen) ?? rawModel;
+    if (model.isEmpty) return;
     final pts = Float32List(model.length); // upper bound: 4 floats / segment
     var w = 0;
     // Sub-pixel segments are CHAINED, not dropped: a smoothed contour is
@@ -1203,6 +1303,10 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
       duration: const Duration(milliseconds: 420),
     )..addListener(_onFocusTick);
     _loadAnnotations(widget.initialAnnotations);
+    // Build the zoomed-out LOD copies off the first frame (chunked async) so
+    // pan/zoom at extents iterates thousands of pre-chained chords instead of
+    // millions of raw segments.
+    ensureSceneLod(widget.scene);
   }
 
   // Saved shapes are restored once (model coords, so they line up after reopen).
@@ -1450,6 +1554,7 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
     if (!identical(oldWidget.scene, widget.scene)) {
       _snapIndex = null;
       _fitBounds = null;
+      ensureSceneLod(widget.scene);
     }
   }
 
