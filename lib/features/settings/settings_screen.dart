@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/constants/app_constants.dart';
 import '../../features/app/app_controller.dart';
+import 'about_screen.dart';
 import '../../shared/widgets/blueprint_background.dart';
 import '../../shared/widgets/cad_panel.dart';
 import '../../shared/widgets/technical_chip.dart';
@@ -113,24 +114,28 @@ class SettingsScreen extends StatelessWidget {
             const SizedBox(height: 14),
             CadPanel(
               child: Column(
-                children: const [
-                  _SettingsTile(
+                children: [
+                  const _SettingsTile(
                     icon: Icons.workspace_premium_outlined,
                     title: 'Premium',
                     subtitle: 'Future advanced viewer tools and export options.',
                     trailing: TechnicalChip(label: 'PLANNED', compact: true),
                   ),
-                  Divider(color: AppColors.border),
-                  _SettingsTile(
+                  const Divider(color: AppColors.border),
+                  const _SettingsTile(
                     icon: Icons.privacy_tip_outlined,
                     title: 'Privacy-first',
                     subtitle: 'No login, no cloud sync, no broad storage permission.',
                   ),
-                  Divider(color: AppColors.border),
+                  const Divider(color: AppColors.border),
                   _SettingsTile(
                     icon: Icons.info_outline,
                     title: 'About FastDWG',
-                    subtitle: 'Version ${AppConstants.appVersion}',
+                    subtitle: 'Version ${AppConstants.appVersion} · '
+                        'open source & licenses',
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const AboutScreen()),
+                    ),
                   ),
                 ],
               ),
@@ -166,16 +171,18 @@ class _SettingsTile extends StatelessWidget {
     required this.title,
     required this.subtitle,
     this.trailing,
+    this.onTap,
   });
 
   final IconData icon;
   final String title;
   final String subtitle;
   final Widget? trailing;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
+    final tile = Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
         children: [
@@ -214,8 +221,19 @@ class _SettingsTile extends StatelessWidget {
             const SizedBox(width: 10),
             trailing!,
           ],
+          if (onTap != null) ...[
+            const SizedBox(width: 6),
+            const Icon(Icons.chevron_right,
+                color: AppColors.textMuted, size: 20),
+          ],
         ],
       ),
+    );
+    if (onTap == null) return tile;
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: onTap,
+      child: tile,
     );
   }
 }
