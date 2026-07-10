@@ -63,3 +63,4 @@ tool/*.png
 screen_now.png
 .backup_pre_lineweight/
 third_party/libredwg/source/
+tool/last_scene.bin

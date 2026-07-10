@@ -615,7 +615,20 @@ class _SnapIndex {
 
   static int _key(int cx, int cy) => (cx + 100000) * 1000000 + (cy + 100000);
 
-  factory _SnapIndex.build(DwgScene scene) {
+  /// Builds the index in slices, yielding to the event loop every ~30k
+  /// segments so a multi-million-segment drawing doesn't freeze the UI the
+  /// moment Measure/Draw is opened (this build used to run synchronously and
+  /// blocked the thread for hundreds of ms on big files).
+  static Future<_SnapIndex> build(DwgScene scene) async {
+    const sliceSize = 30000;
+    var sinceYield = 0;
+    Future<void> maybeYield() async {
+      if (++sinceYield >= sliceSize) {
+        sinceYield = 0;
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+
     final b = scene.drawableBounds;
     final span = b.width > b.height ? b.width : b.height;
     final cell = span <= 0 ? 1.0 : span / 400.0;
@@ -653,14 +666,16 @@ class _SnapIndex {
       }
     }
 
-    scene.lineBatches.forEach((_, m) {
+    for (final m in scene.lineBatches.values) {
       for (var i = 0; i + 3 < m.length; i += 4) {
         add(m[i], m[i + 1], m[i + 2], m[i + 3]);
+        await maybeYield();
       }
-    });
+    }
     final cc = scene.circleCoords;
     for (var i = 0; i < scene.circleCount; i++) {
       add(cc[i * 3], cc[i * 3 + 1], cc[i * 3], cc[i * 3 + 1]); // centre point
+      await maybeYield();
     }
     return _SnapIndex._(cell, minX, minY, Float32List.fromList(seg), cells);
   }
@@ -1150,6 +1165,7 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
 
   // Snap-to-geometry support. Index built lazily on first measure use.
   _SnapIndex? _snapIndex;
+  bool _snapIndexBuilding = false;
   // Tight bounds of the drawing's main content, for the fit button (cached).
   DwgBounds? _fitBounds;
   int _dragMeas = -1; // measurement being dragged
@@ -1395,7 +1411,7 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
         (!oldWidget.drawMode && widget.drawMode);
     if (enteredTool) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _snapIndex ??= _SnapIndex.build(widget.scene);
+        if (mounted) _ensureSnapIndex();
       });
     }
     // NB: these run during the parent's build, so we mutate state directly (the
@@ -1443,13 +1459,31 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
     });
   }
 
+  /// Kicks off the chunked snap-index build once; concurrent calls no-op.
+  void _ensureSnapIndex() {
+    if (_snapIndex != null || _snapIndexBuilding) return;
+    _snapIndexBuilding = true;
+    final scene = widget.scene;
+    _SnapIndex.build(scene).then((idx) {
+      _snapIndexBuilding = false;
+      // The scene may have been swapped while building — only keep a match.
+      if (mounted && identical(widget.scene, scene)) _snapIndex = idx;
+    });
+  }
+
   // Snaps a screen position to the nearest endpoint / midpoint / edge.
+  // While the index is still building (first second on a huge drawing) the
+  // raw tap point is used — no freeze, snapping kicks in as soon as it's ready.
   ({Offset point, int kind}) _snap(Offset screenPos) {
     final t = _transform;
     if (t == null) return (point: Offset.zero, kind: -1);
     final model = t.toModel(screenPos);
-    _snapIndex ??= _SnapIndex.build(widget.scene);
-    final hit = _snapIndex!.nearest(model.dx, model.dy, _snapPx / t.ax.abs());
+    final idx = _snapIndex;
+    if (idx == null) {
+      _ensureSnapIndex();
+      return (point: model, kind: -1);
+    }
+    final hit = idx.nearest(model.dx, model.dy, _snapPx / t.ax.abs());
     if (hit == null) return (point: model, kind: -1);
     return (point: hit.point, kind: hit.kind);
   }

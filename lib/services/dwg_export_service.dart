@@ -25,12 +25,19 @@ import '../data/models/dwg_scene.dart';
 class DwgExportService {
   ByteData? _fontData; // Roboto, loaded once and cached on the main isolate
 
+  /// [paper] is 'fit' (huge page, content fills it — the original behaviour),
+  /// 'a4' or 'a3'. [scaleDenom] (e.g. 100 for 1:100) plots at TRUE scale on
+  /// that paper using [insUnits] to know what one model unit is; null = fit
+  /// the region to the page.
   Future<void> shareRegion({
     required DwgScene scene,
     required DwgBounds region,
     required Set<int> hiddenLayers,
     required String baseName,
     bool showLineWeights = true,
+    String paper = 'fit',
+    int? scaleDenom,
+    int insUnits = 0,
   }) async {
     _fontData ??= await rootBundle.load('assets/fonts/Roboto-Regular.ttf');
 
@@ -40,6 +47,9 @@ class DwgExportService {
       hiddenLayers: hiddenLayers,
       fontBytes: _fontData!.buffer.asUint8List(),
       showLineWeights: showLineWeights,
+      paper: paper,
+      scaleDenom: scaleDenom,
+      insUnits: insUnits,
     );
     // Heavy: build the whole vector PDF off the UI thread.
     final pdfBytes = await compute(_renderVectorPdf, job);
@@ -73,6 +83,9 @@ class _PdfJob {
     required this.hiddenLayers,
     required this.fontBytes,
     required this.showLineWeights,
+    required this.paper,
+    required this.scaleDenom,
+    required this.insUnits,
   });
 
   final DwgScene scene;
@@ -80,7 +93,33 @@ class _PdfJob {
   final Set<int> hiddenLayers;
   final Uint8List fontBytes;
   final bool showLineWeights;
+  final String paper; // 'fit' | 'a4' | 'a3'
+  final int? scaleDenom; // 100 → 1:100; null → fit region to page
+  final int insUnits; // $INSUNITS code, for true-scale mm conversion
 }
+
+/// Millimetres represented by one raw model unit (mirror of the viewer's
+/// dwgUnitMm — duplicated here so the isolate stays free of dart:ui imports).
+double _unitMm(int insUnits) {
+  switch (insUnits) {
+    case 1:
+      return 25.4; // inches
+    case 2:
+      return 304.8; // feet
+    case 4:
+      return 1.0; // mm
+    case 5:
+      return 10.0; // cm
+    case 6:
+      return 1000.0; // m
+    case 14:
+      return 100.0; // dm
+    default:
+      return 1.0;
+  }
+}
+
+const double _ptPerMm = 72.0 / 25.4;
 
 /// Longest side of the PDF page, in points. Vector content stays sharp
 /// regardless, but a larger page raises the model→point scale so fine text
@@ -99,13 +138,25 @@ Future<Uint8List> _renderVectorPdf(_PdfJob job) async {
 
   final rw = region.width;
   final rh = region.height;
-  final double pageW, pageH;
-  if (rw >= rh) {
-    pageW = _pdfMaxSide;
-    pageH = (_pdfMaxSide * rh / rw).clamp(1.0, _pdfMaxSide);
+  final bool realPaper = job.paper == 'a4' || job.paper == 'a3';
+  final double pageW, pageH, margin;
+  if (realPaper) {
+    // Real sheet: A4 210×297mm / A3 297×420mm, oriented to the region.
+    final shortMm = job.paper == 'a3' ? 297.0 : 210.0;
+    final longMm = job.paper == 'a3' ? 420.0 : 297.0;
+    final landscape = rw >= rh;
+    pageW = (landscape ? longMm : shortMm) * _ptPerMm;
+    pageH = (landscape ? shortMm : longMm) * _ptPerMm;
+    margin = 8.0 * _ptPerMm; // 8mm plot margin
   } else {
-    pageH = _pdfMaxSide;
-    pageW = (_pdfMaxSide * rw / rh).clamp(1.0, _pdfMaxSide);
+    if (rw >= rh) {
+      pageW = _pdfMaxSide;
+      pageH = (_pdfMaxSide * rh / rw).clamp(1.0, _pdfMaxSide);
+    } else {
+      pageH = _pdfMaxSide;
+      pageW = (_pdfMaxSide * rw / rh).clamp(1.0, _pdfMaxSide);
+    }
+    margin = _pdfMargin;
   }
 
   final pdf = PdfDocument();
@@ -115,11 +166,18 @@ Future<Uint8List> _renderVectorPdf(_PdfJob job) async {
 
   // Model → PDF transform. PDF's origin is bottom-left with Y up, which matches
   // model space, so (unlike the screen) Y is NOT flipped.
-  final availW = pageW - 2 * _pdfMargin;
-  final availH = pageH - 2 * _pdfMargin;
-  final scale = (availW / rw < availH / rh) ? availW / rw : availH / rh;
-  final ox = _pdfMargin + (availW - rw * scale) / 2 - region.minX * scale;
-  final oy = _pdfMargin + (availH - rh * scale) / 2 - region.minY * scale;
+  final availW = pageW - 2 * margin;
+  final availH = pageH - 2 * margin;
+  // True plot scale when requested (1:denom): one model unit is unitMm real
+  // millimetres, so on paper it spans unitMm/denom mm. Otherwise fit-to-page.
+  final double scale;
+  if (realPaper && job.scaleDenom != null && job.scaleDenom! > 0) {
+    scale = _unitMm(job.insUnits) / job.scaleDenom! * _ptPerMm;
+  } else {
+    scale = (availW / rw < availH / rh) ? availW / rw : availH / rh;
+  }
+  final ox = margin + (availW - rw * scale) / 2 - region.minX * scale;
+  final oy = margin + (availH - rh * scale) / 2 - region.minY * scale;
   double tx(double x) => x * scale + ox;
   double ty(double y) => y * scale + oy;
 
@@ -149,6 +207,10 @@ Future<Uint8List> _renderVectorPdf(_PdfJob job) async {
     if (layerIdx < 0 || layerIdx >= layers.length) return defaultLineW;
     final mm = layers[layerIdx].lineWeightMm;
     if (mm <= 0.25) return defaultLineW;
+    if (realPaper) {
+      // A real sheet plots TRUE lineweights, like AutoCAD: 0.35mm ≈ 1pt.
+      return (mm * _ptPerMm).clamp(defaultLineW, 5.67); // cap 2mm
+    }
     // The 8000pt page makes a true-scale plot width (mm×2.835 ≈ 1pt) almost
     // invisible, so use a heavier multiplier for clear hierarchy (0.35mm wall
     // ≈ 2.5pt), capped so it never blobs.
@@ -219,7 +281,9 @@ Future<Uint8List> _renderVectorPdf(_PdfJob job) async {
     final s = t.value.trim();
     if (s.isEmpty) continue;
     final size = t.height * scale;
-    if (size < 1.0) continue; // too small to read / bloats the file
+    // On a real sheet small annotation text is legitimate (2mm ≈ 5.7pt at
+    // scale, sub-pt at 1:500) — keep more of it than on the huge fit page.
+    if (size < (realPaper ? 0.4 : 1.0)) continue;
     final halign = t.anchor & 0x0F;
     final valign = (t.anchor >> 4) & 0x0F;
     // Width/vertical metrics are only needed for non-left / non-baseline anchors;
@@ -249,6 +313,17 @@ Future<Uint8List> _renderVectorPdf(_PdfJob job) async {
     } else {
       g.drawString(font, size, s, tx(t.x) + adx, ty(t.y) + ady);
     }
+  }
+
+  // Plot stamp: scale + sheet in the bottom-right corner of a true-scale plot,
+  // like a title block's scale field — so a print can be measured with a ruler.
+  if (realPaper && job.scaleDenom != null && job.scaleDenom! > 0) {
+    final stamp = '1:${job.scaleDenom}  ·  ${job.paper.toUpperCase()}';
+    final m = font.stringMetrics(stamp);
+    const stampSize = 9.0;
+    g.setFillColor(ink);
+    g.drawString(font, stampSize, stamp,
+        pageW - margin - m.width * stampSize, margin * 0.35);
   }
 
   return pdf.save();

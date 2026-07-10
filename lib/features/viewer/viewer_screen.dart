@@ -56,6 +56,8 @@ class _ViewerScreenState extends State<ViewerScreen> {
   final DwgExportService _exportService = DwgExportService();
   bool _exportSelectMode = false; // dragging a rectangle to export
   bool _exporting = false; // rendering/sharing in progress
+  String _exportPaper = 'fit'; // 'fit' | 'a4' | 'a3'
+  int? _exportScale; // 100 → 1:100 true scale; null → fit to page
   DwgBounds? _visibleBounds; // current on-screen region (for "visible" export)
 
   /// Settings: appearance of the drawing + comment/draw overlays.
@@ -307,6 +309,12 @@ class _ViewerScreenState extends State<ViewerScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (sheetContext) {
+        return StatefulBuilder(builder: (sheetContext, setSheetState) {
+        void pick(VoidCallback change) {
+          setSheetState(() {});
+          setState(change);
+        }
+
         return SafeArea(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -316,6 +324,56 @@ class _ViewerScreenState extends State<ViewerScreen> {
                 padding: EdgeInsets.fromLTRB(18, 16, 18, 8),
                 child: TechnicalChip(label: 'EXPORT', icon: Icons.ios_share),
               ),
+              // Paper + true plot scale. 'Fit' keeps the original behaviour
+              // (huge page, content fills it); A4/A3 plot on a real sheet and
+              // a 1:N choice makes the print measurable with a ruler.
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 4, 18, 4),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text('${tr('Paper', 'Kağıt')}: ',
+                        style: const TextStyle(
+                            color: AppColors.textMuted, fontSize: 13)),
+                    for (final p in const ['fit', 'a4', 'a3'])
+                      _SettingsChoice(
+                        label: p == 'fit' ? tr('Fit', 'Serbest') : p.toUpperCase(),
+                        selected: _exportPaper == p,
+                        onTap: () => pick(() {
+                          _exportPaper = p;
+                          if (p == 'fit') _exportScale = null;
+                        }),
+                      ),
+                  ],
+                ),
+              ),
+              if (_exportPaper != 'fit')
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 0, 18, 4),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text('${tr('Scale', 'Ölçek')}: ',
+                          style: const TextStyle(
+                              color: AppColors.textMuted, fontSize: 13)),
+                      _SettingsChoice(
+                        label: tr('Fit', 'Sığdır'),
+                        selected: _exportScale == null,
+                        onTap: () => pick(() => _exportScale = null),
+                      ),
+                      for (final d in const [50, 100, 200, 500])
+                        _SettingsChoice(
+                          label: '1:$d',
+                          selected: _exportScale == d,
+                          onTap: () => pick(() => _exportScale = d),
+                        ),
+                    ],
+                  ),
+                ),
               _ExportOption(
                 icon: Icons.fit_screen,
                 title: tr('Visible view', 'Görünen alan'),
@@ -351,6 +409,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
             ],
           ),
         );
+        });
       },
     );
   }
@@ -375,6 +434,9 @@ class _ViewerScreenState extends State<ViewerScreen> {
         hiddenLayers: _hiddenLayers,
         baseName: widget.file.name,
         showLineWeights: _lineWeights,
+        paper: _exportPaper,
+        scaleDenom: _exportScale,
+        insUnits: _effectiveInsUnits,
       );
     } catch (_) {
       if (mounted) {
