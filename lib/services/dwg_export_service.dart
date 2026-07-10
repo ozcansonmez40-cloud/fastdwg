@@ -1,0 +1,255 @@
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart' show compute;
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:path_provider/path_provider.dart';
+import 'package:pdf/pdf.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:vector_math/vector_math_64.dart' show Matrix4;
+
+import '../data/models/dwg_scene.dart';
+
+/// Exports a region of a [DwgScene] as a **vector** PDF and opens the Android
+/// share sheet with it.
+///
+/// The PDF is drawn as real geometry (lines, circles, hatch fills, and text),
+/// the way AutoCAD's "plot to PDF" does — so it stays crisp at any zoom instead
+/// of being a flattened screenshot. It is a black-on-white-paper monochrome
+/// plot (like AutoCAD's monochrome.ctb) — every entity prints black regardless
+/// of its screen colour.
+///
+/// The geometry can run to hundreds of thousands of entities, so the PDF is
+/// assembled on a background isolate (via [compute]); the UI thread only loads
+/// the font, writes the file, and opens the share sheet — it never blocks.
+class DwgExportService {
+  ByteData? _fontData; // Roboto, loaded once and cached on the main isolate
+
+  Future<void> shareRegion({
+    required DwgScene scene,
+    required DwgBounds region,
+    required Set<int> hiddenLayers,
+    required String baseName,
+    bool showLineWeights = true,
+  }) async {
+    _fontData ??= await rootBundle.load('assets/fonts/Roboto-Regular.ttf');
+
+    final job = _PdfJob(
+      scene: scene,
+      region: region,
+      hiddenLayers: hiddenLayers,
+      fontBytes: _fontData!.buffer.asUint8List(),
+      showLineWeights: showLineWeights,
+    );
+    // Heavy: build the whole vector PDF off the UI thread.
+    final pdfBytes = await compute(_renderVectorPdf, job);
+
+    final dir = await getTemporaryDirectory();
+    final pdfFile = File('${dir.path}/${_safeName(baseName)}.pdf');
+    await pdfFile.writeAsBytes(pdfBytes, flush: true);
+
+    await Share.shareXFiles(
+      [XFile(pdfFile.path, mimeType: 'application/pdf')],
+      subject: baseName,
+    );
+  }
+
+  String _safeName(String name) {
+    var base = name;
+    final dot = base.lastIndexOf('.');
+    if (dot > 0) base = base.substring(0, dot);
+    base = base.replaceAll(RegExp(r'[^\w\-]+'), '_').replaceAll(RegExp(r'_+'), '_');
+    base = base.replaceAll(RegExp(r'^_|_$'), '');
+    return base.isEmpty ? 'drawing' : base;
+  }
+}
+
+/// Immutable bundle of everything the background isolate needs. All fields are
+/// sendable across isolates (typed arrays / primitives / plain objects).
+class _PdfJob {
+  const _PdfJob({
+    required this.scene,
+    required this.region,
+    required this.hiddenLayers,
+    required this.fontBytes,
+    required this.showLineWeights,
+  });
+
+  final DwgScene scene;
+  final DwgBounds region;
+  final Set<int> hiddenLayers;
+  final Uint8List fontBytes;
+  final bool showLineWeights;
+}
+
+/// Longest side of the PDF page, in points. Vector content stays sharp
+/// regardless, but a larger page raises the model→point scale so fine text
+/// clears the cull threshold and the fit-view rasterisation stays crisp.
+const double _pdfMaxSide = 8000.0;
+const double _pdfMargin = 24.0;
+
+/// Builds the vector PDF. Runs on a background isolate — must be a top-level
+/// function and touch nothing UI-related (the `pdf` package is pure Dart, so
+/// this is safe). Everything prints black on white paper (monochrome plot).
+Future<Uint8List> _renderVectorPdf(_PdfJob job) async {
+  final scene = job.scene;
+  final region = job.region;
+  final hiddenLayers = job.hiddenLayers;
+  final ink = PdfColor.fromInt(0xFF000000); // all entities print black
+
+  final rw = region.width;
+  final rh = region.height;
+  final double pageW, pageH;
+  if (rw >= rh) {
+    pageW = _pdfMaxSide;
+    pageH = (_pdfMaxSide * rh / rw).clamp(1.0, _pdfMaxSide);
+  } else {
+    pageH = _pdfMaxSide;
+    pageW = (_pdfMaxSide * rw / rh).clamp(1.0, _pdfMaxSide);
+  }
+
+  final pdf = PdfDocument();
+  final page = PdfPage(pdf, pageFormat: PdfPageFormat(pageW, pageH));
+  final g = page.getGraphics();
+  final font = PdfTtfFont(pdf, ByteData.sublistView(job.fontBytes));
+
+  // Model → PDF transform. PDF's origin is bottom-left with Y up, which matches
+  // model space, so (unlike the screen) Y is NOT flipped.
+  final availW = pageW - 2 * _pdfMargin;
+  final availH = pageH - 2 * _pdfMargin;
+  final scale = (availW / rw < availH / rh) ? availW / rw : availH / rh;
+  final ox = _pdfMargin + (availW - rw * scale) / 2 - region.minX * scale;
+  final oy = _pdfMargin + (availH - rh * scale) / 2 - region.minY * scale;
+  double tx(double x) => x * scale + ox;
+  double ty(double y) => y * scale + oy;
+
+  // Cull anything outside the exported region: for "select area"/"visible"
+  // exports the scene holds far more geometry than the page shows, and emitting
+  // it all into the content stream was the main slowdown (and bloated the file).
+  // A small margin keeps entities that straddle the edge. (For a whole-drawing
+  // export the region == the bounds, so nothing extra is dropped.)
+  final mx = region.width * 0.02, my = region.height * 0.02;
+  final clipMinX = region.minX - mx, clipMaxX = region.maxX + mx;
+  final clipMinY = region.minY - my, clipMaxY = region.maxY + my;
+  bool boxOutside(double aMinX, double aMinY, double aMaxX, double aMaxY) =>
+      aMaxX < clipMinX || aMinX > clipMaxX || aMaxY < clipMinY || aMinY > clipMaxY;
+
+  // Segments shorter than ~⅓pt on the page are sub-pixel: invisible but still
+  // cost two path ops each. Dropping them thins out dense drawings massively.
+  final minLenSq = (0.33 / scale) * (0.33 / scale);
+
+  // Page stays white (PDF default) — a proper white-paper plot. Default stroke
+  // ~0.65pt ≈ AutoCAD's default 0.25mm line; layers with an explicit lineweight
+  // plot at their true width (1mm ≈ 2.835pt), capped so nothing is absurd.
+  const defaultLineW = 0.65;
+  final layers = scene.layers;
+  final showLineWeights = job.showLineWeights;
+  double lineWidthForLayer(int layerIdx) {
+    if (!showLineWeights) return defaultLineW;
+    if (layerIdx < 0 || layerIdx >= layers.length) return defaultLineW;
+    final mm = layers[layerIdx].lineWeightMm;
+    if (mm <= 0.25) return defaultLineW;
+    // The 8000pt page makes a true-scale plot width (mm×2.835 ≈ 1pt) almost
+    // invisible, so use a heavier multiplier for clear hierarchy (0.35mm wall
+    // ≈ 2.5pt), capped so it never blobs.
+    return (mm * 7.0).clamp(defaultLineW, 5.0);
+  }
+
+  g.setLineWidth(defaultLineW);
+
+  // ── Solid hatch fills (even-odd) ──
+  for (final fill in scene.fills) {
+    if (hiddenLayers.contains(fill.layer)) continue;
+    if (boxOutside(fill.minX, fill.minY, fill.maxX, fill.maxY)) continue;
+    var any = false;
+    for (final loop in fill.loops) {
+      if (loop.length < 6) continue;
+      g.moveTo(tx(loop[0]), ty(loop[1]));
+      for (var i = 2; i + 1 < loop.length; i += 2) {
+        g.lineTo(tx(loop[i]), ty(loop[i + 1]));
+      }
+      any = true;
+    }
+    if (!any) continue;
+    g.setFillColor(ink);
+    g.fillPath(evenOdd: true);
+  }
+
+  // ── Lines (one stroked path per colour batch) ──
+  scene.lineBatches.forEach((key, model) {
+    if (hiddenLayers.contains(DwgScene.batchLayer(key))) return;
+    var any = false;
+    for (var i = 0; i + 3 < model.length; i += 4) {
+      final x1 = model[i], y1 = model[i + 1];
+      final x2 = model[i + 2], y2 = model[i + 3];
+      final dx = x2 - x1, dy = y2 - y1;
+      if (dx * dx + dy * dy < minLenSq) continue; // zero-length / sub-pixel
+      // Segment bbox vs. region (skip lines entirely off-page).
+      final loX = x1 < x2 ? x1 : x2, hiX = x1 < x2 ? x2 : x1;
+      final loY = y1 < y2 ? y1 : y2, hiY = y1 < y2 ? y2 : y1;
+      if (boxOutside(loX, loY, hiX, hiY)) continue;
+      g.moveTo(tx(x1), ty(y1));
+      g.lineTo(tx(x2), ty(y2));
+      any = true;
+    }
+    if (!any) return;
+    g.setStrokeColor(ink);
+    g.setLineWidth(lineWidthForLayer(DwgScene.batchLayer(key)));
+    g.strokePath();
+  });
+
+  // ── Circles ──
+  final cc = scene.circleCoords;
+  for (var i = 0; i < scene.circleCount; i++) {
+    if (hiddenLayers.contains(scene.circleLayers[i])) continue;
+    final cx = cc[i * 3], cy = cc[i * 3 + 1], rModel = cc[i * 3 + 2];
+    if (boxOutside(cx - rModel, cy - rModel, cx + rModel, cy + rModel)) continue;
+    final r = rModel * scale;
+    if (r < 0.2) continue;
+    g.setStrokeColor(ink);
+    g.setLineWidth(lineWidthForLayer(scene.circleLayers[i]));
+    g.drawEllipse(tx(cx), ty(cy), r, r);
+    g.strokePath();
+  }
+
+  // ── Text ──
+  for (final t in scene.texts) {
+    if (hiddenLayers.contains(t.layer)) continue;
+    if (boxOutside(t.x, t.y, t.x, t.y)) continue;
+    final s = t.value.trim();
+    if (s.isEmpty) continue;
+    final size = t.height * scale;
+    if (size < 1.0) continue; // too small to read / bloats the file
+    final halign = t.anchor & 0x0F;
+    final valign = (t.anchor >> 4) & 0x0F;
+    // Width/vertical metrics are only needed for non-left / non-baseline anchors;
+    // most labels are left+baseline, so skip the per-string metrics work there.
+    double adx = 0.0, ady = 0.0;
+    if (halign != 0 || valign != 0) {
+      final m = font.stringMetrics(s);
+      final w = m.width * size;
+      final ascent = m.ascent * size;
+      final descent = m.descent * size; // negative
+      adx = halign == 1 ? -w / 2 : (halign == 2 ? -w : 0.0);
+      ady = switch (valign) {
+        1 => -descent, // bottom
+        2 => -(ascent + descent) / 2, // middle
+        3 => -ascent, // top
+        _ => 0.0, // baseline
+      };
+    }
+    g.setFillColor(ink);
+    if (t.rotation != 0) {
+      g.saveContext();
+      g.setTransform(
+        Matrix4.translationValues(tx(t.x), ty(t.y), 0)..rotateZ(t.rotation),
+      );
+      g.drawString(font, size, s, adx, ady);
+      g.restoreContext();
+    } else {
+      g.drawString(font, size, s, tx(t.x) + adx, ty(t.y) + ady);
+    }
+  }
+
+  return pdf.save();
+}

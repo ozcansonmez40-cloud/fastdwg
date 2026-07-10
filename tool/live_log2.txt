@@ -1,0 +1,43 @@
+﻿--------- beginning of main
+06-15 00:48:16.150 I/flutter (22075): [IMPORTANT:flutter/shell/platform/android/android_context_vk_impeller.cc(62)] Using the Impeller rendering backend (Vulkan).
+06-15 00:48:16.290 I/flutter (22075): The Dart VM service is listening on http://127.0.0.1:43405/9SpjdFtGT0E=/
+06-15 00:48:20.885 I/flutter (22075): FDW prepare: start tasarım6.dwg
+06-15 00:48:21.024 I/fastdwg (22075): parse: start ver=AC1027
+06-15 00:48:22.777 I/fastdwg (22075): parse: dwg_read_file done err=119 ms=1753 num_objects=112326
+06-15 00:48:22.782 I/fastdwg (22075): parse: layers/setup done ms=1758
+06-15 00:48:23.581 I/fastdwg (22075): parse: modelspace done ms=2557 lines=1516598 circ=1736 txt=3425
+06-15 00:48:23.584 I/fastdwg (22075): parse: orphan pass done ms=2561 lines=1516598 txt=3425
+06-15 00:48:25.020 I/flutter (22075): FDW readScene FAILED: Unsupported operation: Infinity or NaN toInt
+06-15 00:48:25.023 I/flutter (22075): FDW stack: #0      double.toInt (dart:core-patch/double.dart)
+06-15 00:48:25.023 I/flutter (22075): #1      double.floor (dart:core-patch/double.dart:201:34)
+06-15 00:48:25.023 I/flutter (22075): #2      new DwgScene.fromBytes.bin (package:dwgfast/data/models/dwg_scene.dart:260:52)
+06-15 00:48:25.023 I/flutter (22075): #3      new DwgScene.fromBytes (package:dwgfast/data/models/dwg_scene.dart:278:9)
+06-15 00:48:25.023 I/flutter (22075): #4      _parseSceneBytes (package:dwgfast/services/dwg_renderer_service.dart:12:56)
+06-15 00:48:25.023 I/flutter (22075): #5      DwgRendererService._readScene (package:dwgfast/services/dwg_renderer_service.dart:124:17)
+06-15 00:48:25.023 I/flutter (22075): <asynchronous suspension>
+06-15 00:48:25.023 I/flutter (22075): #6      DwgRendererService.prepare (package:dwgfast/services/dwg_renderer_service.dart:47:21)
+06-15 00:48:25.023 I/flutter (22075): <asynchronous suspension>
+06-15 00:48:25.023 I/flutter (22075): #7      _ViewerScreenState._prepareRenderer (package:dwgfast/features/viewer/viewer_screen.dart:81:19)
+06-15 00:48:25.023 I/flutter (22075): <asynchronous suspension>
+06-15 00:48:25.023 I/flutter (22075): 
+06-15 00:48:25.024 I/flutter (22075): FDW prepare: done status=DwgRenderStatus.error scene=false
+06-15 00:48:37.717 I/flutter (22075): FDW prepare: start otopark_rampaperde_üstkodları.dwg
+06-15 00:48:37.757 I/fastdwg (22075): parse: start ver=AC1032
+06-15 00:49:43.904 I/fastdwg (22075): parse: dwg_read_file done err=68 ms=66147 num_objects=2732986
+06-15 00:49:44.028 I/fastdwg (22075): parse: layers/setup done ms=66271
+06-15 00:49:53.509 I/fastdwg (22075): parse: modelspace done ms=75752 lines=8000000 circ=19153 txt=19259
+06-15 00:49:53.591 I/fastdwg (22075): parse: orphan pass done ms=75834 lines=8000000 txt=19259
+06-15 00:50:05.271 I/flutter (22075): FDW readScene: parsed lines=8000000 circ=19153 txt=19259 fills=19493
+06-15 00:50:05.272 I/flutter (22075): FDW prepare: done status=DwgRenderStatus.ready scene=true
+06-15 00:50:22.664 I/flutter (22075): FDW prepare: start REV zemin kat alçıpan tavan.dwg
+06-15 00:50:22.708 I/fastdwg (22075): parse: start ver=AC1032
+06-15 00:50:27.291 I/fastdwg (22075): parse: dwg_read_file done err=68 ms=4584 num_objects=361262
+06-15 00:50:27.314 I/fastdwg (22075): parse: layers/setup done ms=4607
+06-15 00:50:29.558 I/fastdwg (22075): parse: modelspace done ms=6851 lines=2305001 circ=5156 txt=5431
+06-15 00:50:29.568 I/fastdwg (22075): parse: orphan pass done ms=6861 lines=2305001 txt=5431
+06-15 00:50:31.938 I/flutter (22075): FDW readScene: parsed lines=2305001 circ=5156 txt=5431 fills=980
+06-15 00:50:31.938 I/flutter (22075): FDW prepare: done status=DwgRenderStatus.ready scene=true
+06-15 00:57:56.352 I/flutter ( 6155): [IMPORTANT:flutter/shell/platform/android/android_context_vk_impeller.cc(62)] Using the Impeller rendering backend (Vulkan).
+06-15 00:57:56.507 I/flutter ( 6155): The Dart VM service is listening on http://127.0.0.1:32943/95Eh9G_ABiM=/
+06-15 01:03:45.026 I/flutter (14310): [IMPORTANT:flutter/shell/platform/android/android_context_vk_impeller.cc(62)] Using the Impeller rendering backend (Vulkan).
+06-15 01:03:45.206 I/flutter (14310): The Dart VM service is listening on http://127.0.0.1:40663/wr2TExHj-DU=/
