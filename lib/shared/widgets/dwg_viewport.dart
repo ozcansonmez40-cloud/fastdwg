@@ -1324,6 +1324,9 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
         _frozenOffset = snapOffset;
         _frozenSize = snapSize;
         _frozenParams = params;
+        // Re-record the scene layer so its display list becomes the single
+        // cheap image op (that's what makes sheet drags fluid).
+        if (mounted) setState(() {});
       } catch (_) {
         // Capture is best-effort; gestures just fall back to live painting.
       } finally {
@@ -2550,25 +2553,23 @@ class _DwgScenePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Gesture frames: reproject the settled snapshot instead of live geometry.
+    // IDLE frames at the exact captured view: draw the snapshot 1:1 — pixel
+    // identical to the live paint, but the layer's display list becomes one
+    // image op, so sheet/dialog animations over the drawing composite at 60fps
+    // instead of re-rasterising millions of segments every frame. Gestures and
+    // any view change fall through to LIVE painting (no reprojection effects).
     final img = frozen;
-    if (fast && img != null) {
-      final t2 =
-          _computeTransform(size, scene.drawableBounds, viewScale, viewOffset);
-      final t1 = _computeTransform(
-          size, scene.drawableBounds, frozenScale, frozenOffset);
-      if (t1.ax != 0) {
-        final k = t2.ax / t1.ax;
-        final dx = t2.bx - k * t1.bx;
-        final dy = t2.by - k * t1.by;
-        canvas.drawImageRect(
-          img,
-          Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
-          Rect.fromLTWH(dx, dy, size.width * k, size.height * k),
-          Paint()..filterQuality = FilterQuality.low,
-        );
-        return;
-      }
+    if (!fast &&
+        img != null &&
+        viewScale == frozenScale &&
+        viewOffset == frozenOffset) {
+      canvas.drawImageRect(
+        img,
+        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+        Offset.zero & size,
+        Paint(),
+      );
+      return;
     }
     // Model → screen affine, fitted to the current pan/zoom.
     final transform =
