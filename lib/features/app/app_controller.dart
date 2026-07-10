@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../core/l10n/l10n.dart';
+
 import '../../data/models/app_settings.dart';
 import '../../data/models/recent_file.dart';
 import '../../data/repositories/recent_files_repository.dart';
@@ -56,6 +58,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> load() async {
     _settings = _settingsRepository.loadSettings();
+    appLanguage = _settings.language;
     _recentFiles = _recentFilesRepository.loadRecentFiles();
     // Backfill sizes for entries saved before size tracking (or whose intent
     // payload lacked one) so every recents row shows its MB.
@@ -201,6 +204,15 @@ class AppController extends ChangeNotifier {
     }).toList();
     await _recentFilesRepository.saveRecentFiles(_recentFiles);
     _recentFiles = _recentFilesRepository.loadRecentFiles();
+    notifyListeners();
+  }
+
+  /// 'system', 'tr' or 'en' — takes effect immediately (widgets rebuild via
+  /// notifyListeners and read the l10n override).
+  Future<void> updateLanguage(String language) async {
+    _settings = _settings.copyWith(language: language);
+    appLanguage = language;
+    await _settingsRepository.saveSettings(_settings);
     notifyListeners();
   }
 

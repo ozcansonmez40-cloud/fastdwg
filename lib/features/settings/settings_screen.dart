@@ -105,6 +105,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 14),
             CadPanel(
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _SectionTitle(tr('Language', 'Dil')),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      for (final (code, label) in const [
+                        ('system', null), // label resolved below (localized)
+                        ('tr', 'Türkçe'),
+                        ('en', 'English'),
+                      ])
+                        _LanguageChip(
+                          label: label ?? tr('System', 'Sistem'),
+                          selected: controller.settings.language == code,
+                          onTap: () => controller.updateLanguage(code),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            CadPanel(
+              child: Column(
                 children: [
                   _SettingsTile(
                     icon: Icons.storage_outlined,
@@ -190,6 +216,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LanguageChip extends StatelessWidget {
+  const _LanguageChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.accentPrimary : AppColors.surface1,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: selected ? AppColors.accentPrimary : AppColors.border,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? AppColors.bgDeep : AppColors.textSecondary,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );

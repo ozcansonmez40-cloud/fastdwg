@@ -11,6 +11,7 @@ class AppSettings {
     this.viewerBgWhite = false,
     this.viewerMonochrome = false,
     this.viewerLineWeights = true,
+    this.language = 'system',
   });
 
   final ThemeMode themeMode;
@@ -25,6 +26,9 @@ class AppSettings {
   final bool viewerMonochrome;
   final bool viewerLineWeights;
 
+  /// UI language: 'system' (follow device), 'tr' or 'en'.
+  final String language;
+
   AppSettings copyWith({
     ThemeMode? themeMode,
     bool? hasPremium,
@@ -33,6 +37,7 @@ class AppSettings {
     bool? viewerBgWhite,
     bool? viewerMonochrome,
     bool? viewerLineWeights,
+    String? language,
   }) {
     return AppSettings(
       themeMode: themeMode ?? this.themeMode,
@@ -42,6 +47,7 @@ class AppSettings {
       viewerBgWhite: viewerBgWhite ?? this.viewerBgWhite,
       viewerMonochrome: viewerMonochrome ?? this.viewerMonochrome,
       viewerLineWeights: viewerLineWeights ?? this.viewerLineWeights,
+      language: language ?? this.language,
     );
   }
 
@@ -54,6 +60,7 @@ class AppSettings {
       'viewerBgWhite': viewerBgWhite,
       'viewerMonochrome': viewerMonochrome,
       'viewerLineWeights': viewerLineWeights,
+      'language': language,
     };
   }
 
@@ -69,6 +76,7 @@ class AppSettings {
       viewerBgWhite: map['viewerBgWhite'] as bool? ?? false,
       viewerMonochrome: map['viewerMonochrome'] as bool? ?? false,
       viewerLineWeights: map['viewerLineWeights'] as bool? ?? true,
+      language: map['language'] as String? ?? 'system',
     );
   }
 
