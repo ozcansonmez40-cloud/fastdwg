@@ -87,7 +87,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
   final AnnotationsRepository _annotationsRepo = AnnotationsRepository();
   String? _annotations; // açılışta yüklenen JSON, viewport'a verilir
 
-  static const List<String> _units = ['u', 'mm', 'cm', 'm'];
+  static const List<String> _units = ['u', 'mm', 'cm', 'm', 'in', 'ft'];
 
   int get _effectiveInsUnits => _modelUnit;
 
@@ -199,8 +199,23 @@ class _ViewerScreenState extends State<ViewerScreen> {
       // someone set those on purpose. mm/unitless is usually the untouched
       // AutoCAD template default on a model really drawn in cm, so those keep
       // the cm assumption (user can still flip it in Settings).
+      // Auto-detect the drawing's own unit from the header. cm/m/in/ft are
+      // adopted as-is — someone set those deliberately. mm(4)/unitless(0) are
+      // NOT trusted: that's the untouched AutoCAD template default and real
+      // drawings (e.g. this project's own test file: header says mm, model is
+      // cm) lie exactly there, so those keep the cm assumption.
       final hdrUnits = state.scene?.insUnits ?? 0;
-      if (hdrUnits == 5 || hdrUnits == 6) _modelUnit = hdrUnits;
+      if (hdrUnits == 1 || hdrUnits == 2 || hdrUnits == 5 || hdrUnits == 6) {
+        _modelUnit = hdrUnits;
+      }
+      // Measurements open directly in the detected unit — no manual pick.
+      _unit = switch (_modelUnit) {
+        1 => 'in',
+        2 => 'ft',
+        4 => 'mm',
+        6 => 'm',
+        _ => 'cm',
+      };
       _hiddenLayers.clear();
       final layers = state.scene?.layers ?? const [];
       for (var i = 0; i < layers.length; i++) {
@@ -500,6 +515,16 @@ class _ViewerScreenState extends State<ViewerScreen> {
                           label: 'm',
                           selected: _modelUnit == 6,
                           onTap: () => apply(() => _modelUnit = 6),
+                        ),
+                        _SettingsChoice(
+                          label: 'inch',
+                          selected: _modelUnit == 1,
+                          onTap: () => apply(() => _modelUnit = 1),
+                        ),
+                        _SettingsChoice(
+                          label: 'feet',
+                          selected: _modelUnit == 2,
+                          onTap: () => apply(() => _modelUnit = 2),
                         ),
                       ],
                     ),

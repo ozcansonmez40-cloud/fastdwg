@@ -48,6 +48,10 @@ double dwgUnitFactor(String unit, [int insUnits = 0]) {
       return mm / 10.0;
     case 'm':
       return mm / 1000.0;
+    case 'in':
+      return mm / 25.4;
+    case 'ft':
+      return mm / 304.8;
     default: // 'mm'
       return mm;
   }
@@ -314,7 +318,10 @@ void _paintDwgScene(
     final dotLayers = scene.dotLayers;
     final dotPaint = Paint()
       ..strokeCap = StrokeCap.round
-      ..strokeWidth = math.max(2.0, strokeWidth * 1.6);
+      // Same weight as the hairline linework: AutoCAD draws DOT-linetype dots
+      // at the line's own width, so anything fatter reads as a beaded chain
+      // much heavier than the layer (2.0+ px looked "bold" next to thin walls).
+      ..strokeWidth = math.max(1.3, strokeWidth);
     final byColor = <int, List<double>>{};
     for (var i = 0; i < dotColors.length; i++) {
       if (hiddenLayers.contains(dotLayers[i])) continue;
