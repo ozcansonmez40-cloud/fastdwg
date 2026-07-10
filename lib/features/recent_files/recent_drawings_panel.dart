@@ -15,12 +15,14 @@ class RecentDrawingsPanel extends StatelessWidget {
     required this.onOpen,
     required this.onPin,
     this.onRemove,
+    this.title = 'Recent Drawings',
   });
 
   final List<RecentFile> files;
   final ValueChanged<RecentFile> onOpen;
   final ValueChanged<RecentFile> onPin;
   final ValueChanged<RecentFile>? onRemove;
+  final String title;
 
   @override
   Widget build(BuildContext context) {
@@ -32,10 +34,10 @@ class RecentDrawingsPanel extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'Recent Drawings',
-                  style: TextStyle(
+                  title,
+                  style: const TextStyle(
                     color: AppColors.textPrimary,
                     fontSize: 22,
                     fontWeight: FontWeight.w600,

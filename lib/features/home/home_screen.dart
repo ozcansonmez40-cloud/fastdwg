@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../core/constants/app_constants.dart';
 import '../../features/app/app_controller.dart';
 import '../../features/recent_files/recent_drawings_panel.dart';
+import '../../features/recent_files/recents_screen.dart';
 import '../../features/settings/settings_screen.dart';
 import '../../features/viewer/viewer_screen.dart';
 import '../../shared/widgets/blueprint_background.dart';
@@ -96,16 +97,11 @@ class _HomeScreenState extends State<HomeScreen> {
         // without scrolling back up — and the tab isn't a dead duplicate.
         setState(() => _selectedIndex = 0);
         _openFile();
-      case 1: // Recents → scroll the Recent Drawings panel into view
+      case 1: // Recents → full-screen list with sorting and a pinned group
         setState(() => _selectedIndex = 1);
-        final ctx = _recentsKey.currentContext;
-        if (ctx != null) {
-          Scrollable.ensureVisible(
-            ctx,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-          );
-        }
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const RecentsScreen()),
+        );
       case 2: // Settings → open the settings screen (tab highlight unchanged)
         Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const SettingsScreen()),
