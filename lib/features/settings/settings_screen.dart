@@ -4,14 +4,42 @@ import 'package:provider/provider.dart';
 import '../../core/constants/app_constants.dart';
 import '../../features/app/app_controller.dart';
 import 'about_screen.dart';
+import 'privacy_screen.dart';
 import '../../shared/widgets/blueprint_background.dart';
 import '../../shared/widgets/cad_panel.dart';
 import '../../shared/widgets/technical_chip.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_radii.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  // Real bytes on disk (previews + parsed scenes + cached drawings).
+  // Recomputed when the screen opens and after Clear cache.
+  Future<int>? _usageBytes;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _usageBytes ??=
+        context.read<AppController>().computeStorageUsageBytes();
+  }
+
+  void _refreshUsage() {
+    setState(() {
+      _usageBytes =
+          context.read<AppController>().computeStorageUsageBytes();
+    });
+  }
+
+  String _mb(int bytes) => bytes < 1024 * 1024
+      ? '${(bytes / 1024).round()} KB'
+      : '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
 
   @override
   Widget build(BuildContext context) {
@@ -80,11 +108,14 @@ class SettingsScreen extends StatelessWidget {
                   _SettingsTile(
                     icon: Icons.storage_outlined,
                     title: 'Local storage',
-                    subtitle:
-                        'Recent drawings and preferences stay on this device.',
-                    trailing: TechnicalChip(
-                      label: '${controller.settings.cacheLimitMb} MB',
-                      compact: true,
+                    subtitle: 'Space used by previews, parsed scenes and '
+                        'cached drawings on this device.',
+                    trailing: FutureBuilder<int>(
+                      future: _usageBytes,
+                      builder: (context, snap) => TechnicalChip(
+                        label: snap.hasData ? _mb(snap.data!) : '…',
+                        compact: true,
+                      ),
                     ),
                   ),
                   const Divider(color: AppColors.border),
@@ -96,14 +127,14 @@ class SettingsScreen extends StatelessWidget {
                     trailing: TextButton(
                       onPressed: () async {
                         await controller.clearCache();
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Preview cache cleared.'),
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                        }
+                        if (!context.mounted) return;
+                        _refreshUsage();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Cache cleared.'),
+                            duration: Duration(seconds: 2),
+                          ),
+                        );
                       },
                       child: const Text('Clear'),
                     ),
@@ -122,10 +153,14 @@ class SettingsScreen extends StatelessWidget {
                     trailing: TechnicalChip(label: 'PLANNED', compact: true),
                   ),
                   const Divider(color: AppColors.border),
-                  const _SettingsTile(
+                  _SettingsTile(
                     icon: Icons.privacy_tip_outlined,
                     title: 'Privacy-first',
-                    subtitle: 'No login, no cloud sync, no broad storage permission.',
+                    subtitle:
+                        'No login, no cloud sync, no broad storage permission.',
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const PrivacyScreen()),
+                    ),
                   ),
                   const Divider(color: AppColors.border),
                   _SettingsTile(

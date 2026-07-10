@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../../data/models/app_settings.dart';
 import '../../data/models/recent_file.dart';
@@ -209,8 +210,66 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Persists the viewer display preferences so every next drawing opens with
+  /// them (called by the viewer's settings sheet on each change).
+  Future<void> updateViewerDefaults({
+    bool? bgWhite,
+    bool? monochrome,
+    bool? lineWeights,
+  }) async {
+    _settings = _settings.copyWith(
+      viewerBgWhite: bgWhite,
+      viewerMonochrome: monochrome,
+      viewerLineWeights: lineWeights,
+    );
+    await _settingsRepository.saveSettings(_settings);
+    notifyListeners();
+  }
+
+  /// Total bytes of everything the app keeps on disk: preview PNGs, parsed
+  /// scene binaries, cached copies of opened drawings and preferences. Shown
+  /// in Settings so "Local storage" reports real usage, not a made-up number.
+  Future<int> computeStorageUsageBytes() async {
+    var total = 0;
+    Future<void> addDir(String path) async {
+      try {
+        final dir = Directory(path);
+        if (!dir.existsSync()) return;
+        await for (final e in dir.list(recursive: true, followLinks: false)) {
+          if (e is File) {
+            try {
+              total += e.lengthSync();
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    }
+
+    await addDir((await getApplicationDocumentsDirectory()).path);
+    await addDir((await getApplicationSupportDirectory()).path);
+    await addDir((await getTemporaryDirectory()).path);
+    return total;
+  }
+
   Future<void> clearCache() async {
     await _thumbnailService.clearAll();
+    // Parsed scene binaries are pure cache too — they re-generate on the next
+    // open. The DWG copies themselves are kept (recents must stay openable).
+    try {
+      final support = await getApplicationSupportDirectory();
+      for (final f in Directory(support.path).listSync()) {
+        final name = f.uri.pathSegments.last;
+        if (f is File &&
+            (name == 'last_scene.bin' ||
+                name == 'last_scene.bin.timing' ||
+                (name.startsWith('scene_') &&
+                    (name.endsWith('.bin') || name.endsWith('.timing'))))) {
+          try {
+            f.deleteSync();
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
     // Forget the stored thumbnail paths so the list falls back to the icon
     // until each drawing is reopened and re-rendered.
     _recentFiles = _recentFiles

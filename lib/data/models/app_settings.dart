@@ -8,6 +8,9 @@ class AppSettings {
     this.hasPremium = false,
     this.adsEnabled = false,
     this.cacheLimitMb = 256,
+    this.viewerBgWhite = false,
+    this.viewerMonochrome = false,
+    this.viewerLineWeights = true,
   });
 
   final ThemeMode themeMode;
@@ -15,17 +18,30 @@ class AppSettings {
   final bool adsEnabled;
   final int cacheLimitMb;
 
+  // Viewer defaults — remembered across drawings so a preference set once in
+  // the viewer's settings sheet (white paper, B/W, lineweights) applies to
+  // every next file instead of resetting each open.
+  final bool viewerBgWhite;
+  final bool viewerMonochrome;
+  final bool viewerLineWeights;
+
   AppSettings copyWith({
     ThemeMode? themeMode,
     bool? hasPremium,
     bool? adsEnabled,
     int? cacheLimitMb,
+    bool? viewerBgWhite,
+    bool? viewerMonochrome,
+    bool? viewerLineWeights,
   }) {
     return AppSettings(
       themeMode: themeMode ?? this.themeMode,
       hasPremium: hasPremium ?? this.hasPremium,
       adsEnabled: adsEnabled ?? this.adsEnabled,
       cacheLimitMb: cacheLimitMb ?? this.cacheLimitMb,
+      viewerBgWhite: viewerBgWhite ?? this.viewerBgWhite,
+      viewerMonochrome: viewerMonochrome ?? this.viewerMonochrome,
+      viewerLineWeights: viewerLineWeights ?? this.viewerLineWeights,
     );
   }
 
@@ -35,6 +51,9 @@ class AppSettings {
       'hasPremium': hasPremium,
       'adsEnabled': adsEnabled,
       'cacheLimitMb': cacheLimitMb,
+      'viewerBgWhite': viewerBgWhite,
+      'viewerMonochrome': viewerMonochrome,
+      'viewerLineWeights': viewerLineWeights,
     };
   }
 
@@ -47,6 +66,9 @@ class AppSettings {
       hasPremium: map['hasPremium'] as bool? ?? false,
       adsEnabled: map['adsEnabled'] as bool? ?? false,
       cacheLimitMb: map['cacheLimitMb'] as int? ?? 256,
+      viewerBgWhite: map['viewerBgWhite'] as bool? ?? false,
+      viewerMonochrome: map['viewerMonochrome'] as bool? ?? false,
+      viewerLineWeights: map['viewerLineWeights'] as bool? ?? true,
     );
   }
 

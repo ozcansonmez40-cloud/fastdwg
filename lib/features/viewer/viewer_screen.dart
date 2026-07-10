@@ -105,6 +105,12 @@ class _ViewerScreenState extends State<ViewerScreen> {
   @override
   void initState() {
     super.initState();
+    // Start from the remembered viewer defaults (set in any previous session's
+    // settings sheet) instead of hard-coded ones.
+    final saved = context.read<AppController>().settings;
+    _bgWhite = saved.viewerBgWhite;
+    _drawingMono = saved.viewerMonochrome;
+    _lineWeights = saved.viewerLineWeights;
     _prepareRenderer();
     _loadAnnotations();
   }
@@ -399,6 +405,14 @@ class _ViewerScreenState extends State<ViewerScreen> {
             void apply(VoidCallback change) {
               setSheetState(() {});
               setState(change);
+              // Remember the display prefs as defaults for every next drawing
+              // (fire-and-forget; unit/modelUnit stay per-drawing because
+              // they're auto-detected from each file's header).
+              context.read<AppController>().updateViewerDefaults(
+                    bgWhite: _bgWhite,
+                    monochrome: _drawingMono,
+                    lineWeights: _lineWeights,
+                  );
             }
 
             return SafeArea(
