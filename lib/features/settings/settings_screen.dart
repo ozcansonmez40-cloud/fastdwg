@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/constants/app_constants.dart';
+import '../../core/l10n/l10n.dart';
 import '../../features/app/app_controller.dart';
 import 'about_screen.dart';
 import 'privacy_screen.dart';
@@ -47,7 +48,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     return Scaffold(
       backgroundColor: AppColors.bgDeep,
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(title: Text(tr('Settings', 'Ayarlar'))),
       body: BlueprintBackground(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
@@ -56,19 +57,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const _SectionTitle('Theme mode'),
+                  _SectionTitle(tr('Theme mode', 'Tema')),
                   const SizedBox(height: 12),
                   SegmentedButton<ThemeMode>(
-                    segments: const [
+                    segments: [
                       ButtonSegment(
                         value: ThemeMode.dark,
-                        label: Text('Dark'),
-                        icon: Icon(Icons.dark_mode_outlined),
+                        label: Text(tr('Dark', 'Koyu')),
+                        icon: const Icon(Icons.dark_mode_outlined),
                       ),
                       ButtonSegment(
                         value: ThemeMode.system,
-                        label: Text('System'),
-                        icon: Icon(Icons.phone_android_outlined),
+                        label: Text(tr('System', 'Sistem')),
+                        icon: const Icon(Icons.phone_android_outlined),
                       ),
                     ],
                     // Light is removed (the screens are dark-only, so it had no
@@ -107,9 +108,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   _SettingsTile(
                     icon: Icons.storage_outlined,
-                    title: 'Local storage',
-                    subtitle: 'Space used by previews, parsed scenes and '
-                        'cached drawings on this device.',
+                    title: tr('Local storage', 'Yerel depolama'),
+                    subtitle: tr(
+                        'Space used by previews, parsed scenes and '
+                            'cached drawings on this device.',
+                        'Önizlemeler, işlenmiş sahneler ve önbellekteki '
+                            'çizimlerin bu cihazda kapladığı alan.'),
                     trailing: FutureBuilder<int>(
                       future: _usageBytes,
                       builder: (context, snap) => TechnicalChip(
@@ -121,22 +125,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const Divider(color: AppColors.border),
                   _SettingsTile(
                     icon: Icons.cleaning_services_outlined,
-                    title: 'Clear cache',
-                    subtitle: 'Clears generated drawing previews to free space. '
-                        'Your drawings are kept.',
+                    title: tr('Clear cache', 'Önbelleği temizle'),
+                    subtitle: tr(
+                        'Clears generated drawing previews to free space. '
+                            'Your drawings are kept.',
+                        'Yer açmak için üretilen önizlemeleri siler. '
+                            'Çizimlerin korunur.'),
                     trailing: TextButton(
                       onPressed: () async {
                         await controller.clearCache();
                         if (!context.mounted) return;
                         _refreshUsage();
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Cache cleared.'),
-                            duration: Duration(seconds: 2),
+                          SnackBar(
+                            content: Text(
+                                tr('Cache cleared.', 'Önbellek temizlendi.')),
+                            duration: const Duration(seconds: 2),
                           ),
                         );
                       },
-                      child: const Text('Clear'),
+                      child: Text(tr('Clear', 'Temizle')),
                     ),
                   ),
                 ],
@@ -146,18 +154,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
             CadPanel(
               child: Column(
                 children: [
-                  const _SettingsTile(
+                  _SettingsTile(
                     icon: Icons.workspace_premium_outlined,
                     title: 'Premium',
-                    subtitle: 'Future advanced viewer tools and export options.',
-                    trailing: TechnicalChip(label: 'PLANNED', compact: true),
+                    subtitle: tr(
+                        'Future advanced viewer tools and export options.',
+                        'Gelecekte: gelişmiş görüntüleme ve dışa aktarma '
+                            'araçları.'),
+                    trailing: TechnicalChip(
+                        label: tr('PLANNED', 'PLANLI'), compact: true),
                   ),
                   const Divider(color: AppColors.border),
                   _SettingsTile(
                     icon: Icons.privacy_tip_outlined,
-                    title: 'Privacy-first',
-                    subtitle:
+                    title: tr('Privacy-first', 'Önce gizlilik'),
+                    subtitle: tr(
                         'No login, no cloud sync, no broad storage permission.',
+                        'Giriş yok, bulut yok, geniş depolama izni yok.'),
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute(builder: (_) => const PrivacyScreen()),
                     ),
@@ -165,9 +178,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const Divider(color: AppColors.border),
                   _SettingsTile(
                     icon: Icons.info_outline,
-                    title: 'About FastDWG',
-                    subtitle: 'Version ${AppConstants.appVersion} · '
-                        'open source & licenses',
+                    title: tr('About FastDWG', 'FastDWG Hakkında'),
+                    subtitle:
+                        '${tr('Version', 'Sürüm')} ${AppConstants.appVersion} · '
+                        '${tr('open source & licenses', 'açık kaynak ve lisanslar')}',
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute(builder: (_) => const AboutScreen()),
                     ),

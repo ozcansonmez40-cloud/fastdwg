@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/l10n/l10n.dart';
 import '../../data/models/recent_file.dart';
 import '../../shared/widgets/blueprint_background.dart';
 import '../../theme/app_colors.dart';
@@ -54,32 +55,33 @@ class _RecentsScreenState extends State<RecentsScreen> {
 
     return Scaffold(
       backgroundColor: AppColors.bgDeep,
-      appBar: AppBar(title: const Text('Recents')),
+      appBar: AppBar(title: Text(tr('Recents', 'Son Açılanlar'))),
       body: BlueprintBackground(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
           children: [
             Row(
               children: [
-                const Text(
-                  'Sort by',
-                  style: TextStyle(color: AppColors.textMuted, fontSize: 13),
+                Text(
+                  tr('Sort by', 'Sırala'),
+                  style: const TextStyle(
+                      color: AppColors.textMuted, fontSize: 13),
                 ),
                 const SizedBox(width: 10),
                 _SortChip(
-                  label: 'Recent',
+                  label: tr('Recent', 'Son açılan'),
                   selected: _sortBy == _SortBy.lastOpened,
                   onTap: () => setState(() => _sortBy = _SortBy.lastOpened),
                 ),
                 const SizedBox(width: 8),
                 _SortChip(
-                  label: 'Name',
+                  label: tr('Name', 'Ad'),
                   selected: _sortBy == _SortBy.name,
                   onTap: () => setState(() => _sortBy = _SortBy.name),
                 ),
                 const SizedBox(width: 8),
                 _SortChip(
-                  label: 'Size',
+                  label: tr('Size', 'Boyut'),
                   selected: _sortBy == _SortBy.size,
                   onTap: () => setState(() => _sortBy = _SortBy.size),
                 ),
@@ -88,7 +90,7 @@ class _RecentsScreenState extends State<RecentsScreen> {
             const SizedBox(height: 14),
             if (pinned.isNotEmpty) ...[
               RecentDrawingsPanel(
-                title: 'Pinned',
+                title: tr('Pinned', 'Sabitlenenler'),
                 files: pinned,
                 onOpen: (f) => _open(context, f),
                 onPin: controller.togglePinned,
@@ -97,7 +99,7 @@ class _RecentsScreenState extends State<RecentsScreen> {
               const SizedBox(height: 14),
             ],
             RecentDrawingsPanel(
-              title: pinned.isEmpty ? 'All drawings' : 'Others',
+              title: pinned.isEmpty ? tr('All drawings', 'Tüm çizimler') : tr('Others', 'Diğerleri'),
               files: others,
               onOpen: (f) => _open(context, f),
               onPin: controller.togglePinned,

@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/l10n/l10n.dart';
 import '../../data/models/dwg_scene.dart';
 import '../../data/models/recent_file.dart';
 import '../../data/repositories/annotations_repository.dart';
+import '../../data/repositories/camera_repository.dart';
 import '../../features/app/app_controller.dart';
 import '../../services/dwg_export_service.dart';
 import '../../services/dwg_renderer_service.dart';
@@ -87,6 +89,9 @@ class _ViewerScreenState extends State<ViewerScreen> {
   final AnnotationsRepository _annotationsRepo = AnnotationsRepository();
   String? _annotations; // açılışta yüklenen JSON, viewport'a verilir
 
+  // Dosya bazında son bakılan bölge — kapatıp açınca kaldığın yerden devam.
+  final CameraRepository _cameraRepo = CameraRepository();
+
   static const List<String> _units = ['u', 'mm', 'cm', 'm', 'in', 'ft'];
 
   int get _effectiveInsUnits => _modelUnit;
@@ -129,6 +134,12 @@ class _ViewerScreenState extends State<ViewerScreen> {
 
   @override
   void dispose() {
+    // Remember where the user was looking so the next open resumes there
+    // (fire-and-forget; prefs write outlives this state object safely).
+    final b = _visibleBounds;
+    if (b != null) {
+      _cameraRepo.save(widget.file.id, b.minX, b.minY, b.maxX, b.maxY);
+    }
     _searchCtl.dispose();
     super.dispose();
   }
@@ -228,6 +239,19 @@ class _ViewerScreenState extends State<ViewerScreen> {
         if (!layers[i].visible) _hiddenLayers.add(i);
       }
     });
+    _restoreCamera();
+  }
+
+  /// Jumps to the region the user was viewing when this file was last closed.
+  Future<void> _restoreCamera() async {
+    if (_renderState.scene == null) return;
+    final b = await _cameraRepo.load(widget.file.id);
+    if (!mounted || b == null) return;
+    setState(() {
+      _focusTarget = Offset((b[0] + b[2]) / 2, (b[1] + b[3]) / 2);
+      _focusSpan = b[3] - b[1];
+      _focusToken++;
+    });
   }
 
   void _onMeasureTap() {
@@ -294,8 +318,8 @@ class _ViewerScreenState extends State<ViewerScreen> {
               ),
               _ExportOption(
                 icon: Icons.fit_screen,
-                title: 'Visible view',
-                subtitle: 'Share the area currently on screen as a PDF',
+                title: tr('Visible view', 'Görünen alan'),
+                subtitle: tr('Share the area currently on screen as a PDF', 'Ekrandaki alanı PDF olarak paylaş'),
                 onTap: () {
                   Navigator.of(sheetContext).pop();
                   final scene = _renderState.scene;
@@ -305,8 +329,8 @@ class _ViewerScreenState extends State<ViewerScreen> {
               ),
               _ExportOption(
                 icon: Icons.crop,
-                title: 'Select area',
-                subtitle: 'Draw a box and share only that region as a PDF',
+                title: tr('Select area', 'Alan seç'),
+                subtitle: tr('Draw a box and share only that region as a PDF', 'Kutu çiz, yalnızca o bölgeyi PDF olarak paylaş'),
                 onTap: () {
                   Navigator.of(sheetContext).pop();
                   setState(() => _exportSelectMode = true);
@@ -314,8 +338,8 @@ class _ViewerScreenState extends State<ViewerScreen> {
               ),
               _ExportOption(
                 icon: Icons.crop_free,
-                title: 'Whole drawing',
-                subtitle: 'Share the entire drawing as a PDF',
+                title: tr('Whole drawing', 'Tüm çizim'),
+                subtitle: tr('Share the entire drawing as a PDF', 'Çizimin tamamını PDF olarak paylaş'),
                 onTap: () {
                   Navigator.of(sheetContext).pop();
                   final scene = _renderState.scene;
@@ -355,8 +379,8 @@ class _ViewerScreenState extends State<ViewerScreen> {
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Export failed.'),
+          SnackBar(
+            content: Text(tr('Export failed.', 'Dışa aktarma başarısız.')),
             duration: Duration(seconds: 3),
           ),
         );
@@ -427,7 +451,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
                       icon: Icons.tune,
                     ),
                     const SizedBox(height: 18),
-                    const _SettingsLabel('Comment color'),
+                    _SettingsLabel(tr('Comment color', 'Yorum rengi')),
                     const SizedBox(height: 10),
                     Wrap(
                       spacing: 14,
@@ -458,43 +482,43 @@ class _ViewerScreenState extends State<ViewerScreen> {
                       ],
                     ),
                     const SizedBox(height: 22),
-                    const _SettingsLabel('Background color'),
+                    _SettingsLabel(tr('Background color', 'Arka plan rengi')),
                     const SizedBox(height: 10),
                     Row(
                       children: [
                         _SettingsChoice(
-                          label: 'Black',
+                          label: tr('Black', 'Siyah'),
                           selected: !_bgWhite,
                           onTap: () => apply(() => _bgWhite = false),
                         ),
                         const SizedBox(width: 10),
                         _SettingsChoice(
-                          label: 'White',
+                          label: tr('White', 'Beyaz'),
                           selected: _bgWhite,
                           onTap: () => apply(() => _bgWhite = true),
                         ),
                       ],
                     ),
                     const SizedBox(height: 22),
-                    const _SettingsLabel('Drawing color'),
+                    _SettingsLabel(tr('Drawing color', 'Çizim rengi')),
                     const SizedBox(height: 10),
                     Row(
                       children: [
                         _SettingsChoice(
-                          label: 'Original color',
+                          label: tr('Original color', 'Orijinal renkler'),
                           selected: !_drawingMono,
                           onTap: () => apply(() => _drawingMono = false),
                         ),
                         const SizedBox(width: 10),
                         _SettingsChoice(
-                          label: 'Black/White',
+                          label: tr('Black/White', 'Siyah/Beyaz'),
                           selected: _drawingMono,
                           onTap: () => apply(() => _drawingMono = true),
                         ),
                       ],
                     ),
                     const SizedBox(height: 22),
-                    const _SettingsLabel('Measurement unit'),
+                    _SettingsLabel(tr('Measurement unit', 'Ölçü birimi')),
                     const SizedBox(height: 10),
                     Wrap(
                       spacing: 10,
@@ -509,7 +533,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
                       ],
                     ),
                     const SizedBox(height: 22),
-                    const _SettingsLabel('Drawing unit (1 unit =)'),
+                    _SettingsLabel(tr('Drawing unit (1 unit =)', 'Çizim birimi (1 birim =)')),
                     const SizedBox(height: 10),
                     Wrap(
                       spacing: 10,
@@ -543,19 +567,19 @@ class _ViewerScreenState extends State<ViewerScreen> {
                       ],
                     ),
                     const SizedBox(height: 22),
-                    const _SettingsLabel('Line weights'),
+                    _SettingsLabel(tr('Line weights', 'Çizgi kalınlıkları')),
                     const SizedBox(height: 10),
                     Wrap(
                       spacing: 10,
                       runSpacing: 10,
                       children: [
                         _SettingsChoice(
-                          label: 'On',
+                          label: tr('On', 'Açık'),
                           selected: _lineWeights,
                           onTap: () => apply(() => _lineWeights = true),
                         ),
                         _SettingsChoice(
-                          label: 'Off',
+                          label: tr('Off', 'Kapalı'),
                           selected: !_lineWeights,
                           onTap: () => apply(() => _lineWeights = false),
                         ),
@@ -721,8 +745,8 @@ class _ViewerLoadingView extends StatelessWidget {
         children: [
           const WalkingWorker(size: 104),
           const SizedBox(height: 14),
-          const Text(
-            'Opening drawing…',
+          Text(
+            tr('Opening drawing…', 'Çizim açılıyor…'),
             style: TextStyle(
               color: AppColors.textPrimary,
               fontSize: 16,
@@ -777,7 +801,7 @@ class _ViewerErrorView extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               message ??
-                  'The file may be corrupted or its DWG version is not supported.',
+                  tr('The file may be corrupted or its DWG version is not supported.', 'Dosya bozuk olabilir veya DWG sürümü desteklenmiyor.'),
               textAlign: TextAlign.center,
               style: const TextStyle(
                 color: AppColors.textSecondary,
@@ -789,7 +813,7 @@ class _ViewerErrorView extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: () => Navigator.of(context).maybePop(),
               icon: const Icon(Icons.arrow_back, size: 18),
-              label: const Text('Go back'),
+              label: Text(tr('Go back', 'Geri dön')),
               style: OutlinedButton.styleFrom(
                 foregroundColor: AppColors.accentPrimary,
                 side: const BorderSide(color: AppColors.accentPrimary),
@@ -1039,15 +1063,15 @@ class _MeasureReadout extends StatelessWidget {
   }
 
   String _readout() {
-    if (!armed) return 'Tap a measurement to select it, then ✕ to delete.';
+    if (!armed) return tr('Tap a measurement to select it, then ✕ to delete.', 'Silmek için önce ölçüme dokun, sonra ✕.');
     final r = result;
     final f = dwgUnitFactor(unit, insUnits);
     switch (type) {
       case MeasureType.distance:
-        if (r?.distance == null) return 'Tap two points';
+        if (r?.distance == null) return tr('Tap two points', 'İki noktaya dokun');
         return 'Distance: ${_format(r!.distance! * f)} $unit';
       case MeasureType.angle:
-        if (r?.angleDeg == null) return 'Tap 1st arm, then the vertex, then 2nd arm';
+        if (r?.angleDeg == null) return tr('Tap 1st arm, then the vertex, then 2nd arm', 'Önce 1. kol, sonra köşe, sonra 2. kol');
         return 'Angle: ${r!.angleDeg!.toStringAsFixed(1)}°';
       case MeasureType.area:
         if (r?.area != null) {
@@ -1056,7 +1080,7 @@ class _MeasureReadout extends StatelessWidget {
         if (r?.perimeter != null) {
           return 'Perimeter: ${_format(r!.perimeter! * f)} $unit · add a 3rd point';
         }
-        return 'Tap corners (3+); tap the first point to close. Press Area again for a new one.';
+        return tr('Tap corners (3+); tap the first point to close. Press Area again for a new one.', 'Köşelere dokun (3+); kapatmak için ilk noktaya dokun.');
     }
   }
 
@@ -1081,21 +1105,21 @@ class _MeasureReadout extends StatelessWidget {
                     child: Row(
                       children: [
                         _TypeChip(
-                          label: 'Distance',
+                          label: tr('Distance', 'Mesafe'),
                           icon: Icons.straighten,
                           selected: armed && type == MeasureType.distance,
                           onTap: () => onTypeChanged?.call(MeasureType.distance),
                         ),
                         const SizedBox(width: 6),
                         _TypeChip(
-                          label: 'Angle',
+                          label: tr('Angle', 'Açı'),
                           icon: Icons.architecture,
                           selected: armed && type == MeasureType.angle,
                           onTap: () => onTypeChanged?.call(MeasureType.angle),
                         ),
                         const SizedBox(width: 6),
                         _TypeChip(
-                          label: 'Area',
+                          label: tr('Area', 'Alan'),
                           icon: Icons.crop_square,
                           selected: armed && type == MeasureType.area,
                           onTap: () => onTypeChanged?.call(MeasureType.area),
@@ -1105,14 +1129,14 @@ class _MeasureReadout extends StatelessWidget {
                   ),
                 ),
                 IconButton(
-                  tooltip: 'Undo',
+                  tooltip: tr('Undo', 'Geri al'),
                   visualDensity: VisualDensity.compact,
                   icon: const Icon(Icons.undo, size: 20),
                   color: AppColors.textSecondary,
                   onPressed: onUndo,
                 ),
                 IconButton(
-                  tooltip: 'Clear',
+                  tooltip: tr('Clear', 'Temizle'),
                   visualDensity: VisualDensity.compact,
                   icon: const Icon(Icons.delete_outline, size: 20),
                   color: AppColors.textSecondary,
@@ -1162,12 +1186,12 @@ class _DrawToolbar extends StatelessWidget {
   final VoidCallback? onUndo;
 
   String get _hint {
-    if (!armed) return 'Tap a drawing to select it, then ✕ to delete.';
+    if (!armed) return tr('Tap a drawing to select it, then ✕ to delete.', 'Silmek için önce çizime dokun, sonra ✕.');
     return switch (tool) {
-      DrawTool.polyline => 'Tap points; tap the last point again to finish',
-      DrawTool.rectangle => 'Tap two opposite corners',
-      DrawTool.circle => 'Tap the centre, then a point on the edge',
-      DrawTool.arc => 'Tap start, a point on the arc, then end',
+      DrawTool.polyline => tr('Tap points; tap the last point again to finish', 'Noktalara dokun; bitirmek için son noktaya tekrar dokun'),
+      DrawTool.rectangle => tr('Tap two opposite corners', 'Karşılıklı iki köşeye dokun'),
+      DrawTool.circle => tr('Tap the centre, then a point on the edge', 'Merkeze, sonra kenardan bir noktaya dokun'),
+      DrawTool.arc => tr('Tap start, a point on the arc, then end', 'Başlangıca, yaydan bir noktaya, sonra bitişe dokun'),
     };
   }
 
@@ -1192,28 +1216,28 @@ class _DrawToolbar extends StatelessWidget {
                     child: Row(
                       children: [
                         _TypeChip(
-                          label: 'Polyline',
+                          label: tr('Polyline', 'Çoklu çizgi'),
                           icon: Icons.timeline,
                           selected: armed && tool == DrawTool.polyline,
                           onTap: () => onToolChanged?.call(DrawTool.polyline),
                         ),
                         const SizedBox(width: 6),
                         _TypeChip(
-                          label: 'Rectangle',
+                          label: tr('Rectangle', 'Dikdörtgen'),
                           icon: Icons.crop_square,
                           selected: armed && tool == DrawTool.rectangle,
                           onTap: () => onToolChanged?.call(DrawTool.rectangle),
                         ),
                         const SizedBox(width: 6),
                         _TypeChip(
-                          label: 'Circle',
+                          label: tr('Circle', 'Daire'),
                           icon: Icons.circle_outlined,
                           selected: armed && tool == DrawTool.circle,
                           onTap: () => onToolChanged?.call(DrawTool.circle),
                         ),
                         const SizedBox(width: 6),
                         _TypeChip(
-                          label: 'Arc',
+                          label: tr('Arc', 'Yay'),
                           icon: Icons.architecture,
                           selected: armed && tool == DrawTool.arc,
                           onTap: () => onToolChanged?.call(DrawTool.arc),
@@ -1223,14 +1247,14 @@ class _DrawToolbar extends StatelessWidget {
                   ),
                 ),
                 IconButton(
-                  tooltip: 'Undo',
+                  tooltip: tr('Undo', 'Geri al'),
                   visualDensity: VisualDensity.compact,
                   icon: const Icon(Icons.undo, size: 20),
                   color: AppColors.textSecondary,
                   onPressed: onUndo,
                 ),
                 IconButton(
-                  tooltip: 'Clear',
+                  tooltip: tr('Clear', 'Temizle'),
                   visualDensity: VisualDensity.compact,
                   icon: const Icon(Icons.delete_outline, size: 20),
                   color: AppColors.textSecondary,
@@ -1418,7 +1442,7 @@ class _FloatingViewerBar extends StatelessWidget {
             ),
             IconButton(
               onPressed: onSearchTap,
-              tooltip: 'Search text',
+              tooltip: tr('Search text', 'Metin ara'),
               icon: const Icon(Icons.search, color: AppColors.textPrimary),
             ),
             const SizedBox(width: 4),
@@ -1475,11 +1499,11 @@ class _TextSearchBar extends StatelessWidget {
                 textInputAction: TextInputAction.search,
                 onSubmitted: (_) => onNext(),
                 style: const TextStyle(color: AppColors.textPrimary, fontSize: 15),
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   isCollapsed: true,
                   border: InputBorder.none,
-                  hintText: 'Search text (room, number, grid...)',
-                  hintStyle: TextStyle(color: AppColors.textMuted, fontSize: 14),
+                  hintText: tr('Search text (room, number, grid...)', 'Metin ara (oda, numara, aks...)'),
+                  hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 14),
                 ),
               ),
             ),
@@ -1581,7 +1605,7 @@ class _LayerPanelSheetState extends State<_LayerPanelSheet> {
                     _commit();
                   },
                   icon: const Icon(Icons.visibility_outlined, size: 18),
-                  label: const Text('All'),
+                  label: Text(tr('All', 'Tümü')),
                   style: TextButton.styleFrom(
                       foregroundColor: AppColors.accentPrimary),
                 ),
@@ -1604,7 +1628,7 @@ class _LayerPanelSheetState extends State<_LayerPanelSheet> {
                         : Icons.visibility_off_outlined,
                     size: 18,
                   ),
-                  label: Text(allHidden ? 'Show' : 'Hide'),
+                  label: Text(allHidden ? tr('Show', 'Göster') : tr('Hide', 'Gizle')),
                   style: TextButton.styleFrom(
                       foregroundColor: AppColors.textSecondary),
                 ),
@@ -1624,7 +1648,7 @@ class _LayerPanelSheetState extends State<_LayerPanelSheet> {
                   isDense: true,
                   prefixIcon: const Icon(Icons.search,
                       size: 18, color: AppColors.textMuted),
-                  hintText: 'Search layers',
+                  hintText: tr('Search layers', 'Katman ara'),
                   hintStyle:
                       const TextStyle(color: AppColors.textMuted, fontSize: 13),
                   contentPadding: const EdgeInsets.symmetric(vertical: 8),
@@ -1642,9 +1666,9 @@ class _LayerPanelSheetState extends State<_LayerPanelSheet> {
           ),
           Flexible(
             child: shown.isEmpty
-                ? const Padding(
-                    padding: EdgeInsets.all(20),
-                    child: Text('No layers match',
+                ? Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Text(tr('No layers match', 'Eşleşen katman yok'),
                         style: TextStyle(color: AppColors.textMuted)),
                   )
                 : ListView.builder(
@@ -1685,7 +1709,7 @@ class _LayerPanelSheetState extends State<_LayerPanelSheet> {
                               ),
                             ),
                             IconButton(
-                              tooltip: 'Isolate',
+                              tooltip: tr('Isolate', 'Sadece bu'),
                               visualDensity: VisualDensity.compact,
                               icon: const Icon(Icons.lightbulb_outline, size: 20),
                               color: AppColors.textMuted,
@@ -1755,30 +1779,30 @@ class _ViewerBottomBar extends StatelessWidget {
             children: [
               _BottomAction(
                 icon: Icons.straighten,
-                label: 'Measure',
+                label: tr('Measure', 'Ölç'),
                 onTap: onMeasureTap,
                 active: measureActive,
               ),
               _BottomAction(
                 icon: Icons.edit_outlined,
-                label: 'Draw',
+                label: tr('Draw', 'Çiz'),
                 onTap: onDrawTap,
                 active: drawActive,
               ),
               _BottomAction(
                 icon: Icons.layers_outlined,
-                label: 'Layers',
+                label: tr('Layers', 'Katmanlar'),
                 onTap: onLayersTap,
               ),
               _BottomAction(
                 icon: Icons.ios_share,
-                label: 'Export',
+                label: tr('Export', 'Dışa aktar'),
                 onTap: onExportTap,
                 active: exportActive,
               ),
               _BottomAction(
                 icon: Icons.tune,
-                label: 'Settings',
+                label: tr('Settings', 'Ayarlar'),
                 onTap: onSettingsTap,
               ),
             ],
@@ -1857,9 +1881,9 @@ class _ExportSelectBar extends StatelessWidget {
           children: [
             const Icon(Icons.crop, color: AppColors.accentPrimary, size: 18),
             const SizedBox(width: 8),
-            const Expanded(
+            Expanded(
               child: Text(
-                'Draw a rectangle to export',
+                tr('Draw a rectangle to export', 'Dışa aktarmak için dikdörtgen çiz'),
                 style: TextStyle(
                   color: AppColors.textPrimary,
                   fontSize: 14,
@@ -1870,7 +1894,7 @@ class _ExportSelectBar extends StatelessWidget {
             TextButton(
               onPressed: onCancel,
               style: TextButton.styleFrom(foregroundColor: AppColors.textSecondary),
-              child: const Text('Cancel'),
+              child: Text(tr('Cancel', 'Vazgeç')),
             ),
           ],
         ),
@@ -1888,14 +1912,14 @@ class _ExportingOverlay extends StatelessWidget {
   Widget build(BuildContext context) {
     return ColoredBox(
       color: AppColors.bgDeep.withValues(alpha: 0.55),
-      child: const Center(
+      child: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            CircularProgressIndicator(color: AppColors.accentPrimary),
-            SizedBox(height: 16),
+            const CircularProgressIndicator(color: AppColors.accentPrimary),
+            const SizedBox(height: 16),
             Text(
-              'Exporting…',
+              tr('Exporting…', 'Dışa aktarılıyor…'),
               style: TextStyle(
                 color: AppColors.textPrimary,
                 fontSize: 14,

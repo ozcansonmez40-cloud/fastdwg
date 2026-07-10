@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../../core/l10n/l10n.dart';
 import '../../data/models/recent_file.dart';
 import '../../shared/widgets/cad_panel.dart';
 import '../../shared/widgets/technical_chip.dart';
@@ -15,14 +16,14 @@ class RecentDrawingsPanel extends StatelessWidget {
     required this.onOpen,
     required this.onPin,
     this.onRemove,
-    this.title = 'Recent Drawings',
+    this.title,
   });
 
   final List<RecentFile> files;
   final ValueChanged<RecentFile> onOpen;
   final ValueChanged<RecentFile> onPin;
   final ValueChanged<RecentFile>? onRemove;
-  final String title;
+  final String? title;
 
   @override
   Widget build(BuildContext context) {
@@ -36,7 +37,7 @@ class RecentDrawingsPanel extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  title,
+                  title ?? tr('Recent Drawings', 'Son Çizimler'),
                   style: const TextStyle(
                     color: AppColors.textPrimary,
                     fontSize: 22,
@@ -45,7 +46,9 @@ class RecentDrawingsPanel extends StatelessWidget {
                   ),
                 ),
               ),
-              TechnicalChip(label: '${files.length} files', compact: true),
+              TechnicalChip(
+                  label: '${files.length} ${tr('files', 'dosya')}',
+                  compact: true),
             ],
           ),
           const SizedBox(height: 10),
@@ -80,14 +83,17 @@ class _EmptyRecentState extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadii.card),
         border: Border.all(color: AppColors.border),
       ),
-      child: const Row(
+      child: Row(
         children: [
-          Icon(Icons.folder_open_outlined, color: AppColors.accentSecondary),
-          SizedBox(width: 12),
+          const Icon(Icons.folder_open_outlined,
+              color: AppColors.accentSecondary),
+          const SizedBox(width: 12),
           Expanded(
             child: Text(
-              'Open a DWG file to start building your local recent list.',
-              style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+              tr('Open a DWG file to start building your local recent list.',
+                  'Son açılanlar listeni oluşturmak için bir DWG dosyası aç.'),
+              style: const TextStyle(
+                  color: AppColors.textSecondary, fontSize: 13),
             ),
           ),
         ],
@@ -167,7 +173,9 @@ class _RecentFileRow extends StatelessWidget {
                 ),
               ),
               IconButton(
-                tooltip: file.isPinned ? 'Unpin' : 'Pin',
+                tooltip: file.isPinned
+                    ? tr('Unpin', 'Sabitlemeyi kaldır')
+                    : tr('Pin', 'Sabitle'),
                 onPressed: onPin,
                 icon: Icon(
                   file.isPinned ? Icons.push_pin : Icons.push_pin_outlined,
@@ -176,7 +184,7 @@ class _RecentFileRow extends StatelessWidget {
                 ),
               ),
               PopupMenuButton<String>(
-                tooltip: 'More',
+                tooltip: tr('More', 'Daha fazla'),
                 icon: const Icon(Icons.more_vert, color: AppColors.textMuted, size: 20),
                 color: AppColors.bgDeep,
                 onSelected: (value) async {
@@ -192,20 +200,24 @@ class _RecentFileRow extends StatelessWidget {
                   }
                 },
                 itemBuilder: (context) => [
-                  const PopupMenuItem(
+                  PopupMenuItem(
                     value: 'open',
-                    child: _MenuRow(icon: Icons.open_in_new, label: 'Open'),
+                    child: _MenuRow(
+                        icon: Icons.open_in_new, label: tr('Open', 'Aç')),
                   ),
                   PopupMenuItem(
                     value: 'pin',
                     child: _MenuRow(
                       icon: file.isPinned ? Icons.push_pin_outlined : Icons.push_pin,
-                      label: file.isPinned ? 'Unpin' : 'Pin',
+                      label: file.isPinned
+                          ? tr('Unpin', 'Sabitlemeyi kaldır')
+                          : tr('Pin', 'Sabitle'),
                     ),
                   ),
-                  const PopupMenuItem(
+                  PopupMenuItem(
                     value: 'remove',
-                    child: _MenuRow(icon: Icons.delete_outline, label: 'Delete'),
+                    child: _MenuRow(
+                        icon: Icons.delete_outline, label: tr('Delete', 'Sil')),
                   ),
                 ],
               ),
@@ -224,27 +236,27 @@ class _RecentFileRow extends StatelessWidget {
       builder: (context) => AlertDialog(
         backgroundColor: AppColors.bgDeep,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text(
-          'Delete file?',
-          style: TextStyle(color: AppColors.textPrimary, fontSize: 18),
+        title: Text(
+          tr('Delete file?', 'Dosya silinsin mi?'),
+          style: const TextStyle(color: AppColors.textPrimary, fontSize: 18),
         ),
         content: Text(
-          '"$name" will be deleted.',
+          tr('"$name" will be deleted.', '"$name" silinecek.'),
           style: const TextStyle(color: AppColors.textMuted, fontSize: 14),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: AppColors.textMuted),
+            child: Text(
+              tr('Cancel', 'Vazgeç'),
+              style: const TextStyle(color: AppColors.textMuted),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text(
-              'Delete',
-              style: TextStyle(color: Colors.redAccent),
+            child: Text(
+              tr('Delete', 'Sil'),
+              style: const TextStyle(color: Colors.redAccent),
             ),
           ),
         ],
@@ -262,11 +274,20 @@ class _RecentFileRow extends StatelessWidget {
 
   String _openedText(RecentFile file) {
     final minutes = DateTime.now().difference(file.lastOpenedAt).inMinutes;
+    final hours = DateTime.now().difference(file.lastOpenedAt).inHours;
+    if (isTurkish) {
+      final opened = minutes < 1
+          ? 'az önce'
+          : minutes < 60
+              ? '$minutes dk önce'
+              : '$hours sa önce';
+      return 'Son açılış: $opened';
+    }
     final opened = minutes < 1
         ? 'just now'
         : minutes < 60
             ? '$minutes min ago'
-            : '${DateTime.now().difference(file.lastOpenedAt).inHours} h ago';
+            : '$hours h ago';
     return 'Last opened $opened';
   }
 }

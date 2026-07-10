@@ -28,12 +28,20 @@ class NativeDwgBridge(private val context: Context) {
         // multi-MB payload never crosses the platform channel (OOM-safe).
         // One scene file PER DRAWING (keyed by the input copy's path) so a
         // queued parse of the next file can never overwrite a scene the
-        // previous screen is still reading.
+        // previous screen is still reading. The app version is part of the
+        // name so a build with parser fixes never serves scenes rendered by
+        // an older parser.
         val sceneKey = Integer.toHexString(localFile.absolutePath.hashCode())
-        val sceneFile = File(context.filesDir, "scene_$sceneKey.bin")
+        val sceneFile =
+            File(context.filesDir, "scene_${sceneKey}_v${BuildConfig.VERSION_CODE}.bin")
+        // Fast path: an up-to-date scene from a previous open of the SAME
+        // unchanged DWG is served as-is — seconds instead of a full re-parse.
+        val cacheValid = sceneFile.length() >= 8 &&
+            sceneFile.lastModified() >= localFile.lastModified() &&
+            readErrFlag(sceneFile) == 0
         // Guard the native call: any Java-level failure (link error, etc.) is
         // turned into a clean "unsupported" result instead of crashing.
-        val wrote = try {
+        val wrote = if (cacheValid) true else try {
             nativePrepareDrawing(localFile.absolutePath, name, sceneFile.absolutePath)
         } catch (error: Throwable) {
             false
@@ -57,16 +65,7 @@ class NativeDwgBridge(private val context: Context) {
 
         // Binary header: u32 magic, u32 errorFlag (little-endian). errorFlag == 0
         // means the parser produced a scene.
-        var hasScene = false
-        if (wrote && sceneFile.length() >= 8) {
-            val head = ByteArray(8)
-            sceneFile.inputStream().use { it.read(head) }
-            val errFlag = (head[4].toInt() and 0xFF) or
-                ((head[5].toInt() and 0xFF) shl 8) or
-                ((head[6].toInt() and 0xFF) shl 16) or
-                ((head[7].toInt() and 0xFF) shl 24)
-            hasScene = errFlag == 0
-        }
+        val hasScene = wrote && sceneFile.length() >= 8 && readErrFlag(sceneFile) == 0
 
         return mapOf(
             "status" to if (hasScene) "ready" else "unsupported",
@@ -80,6 +79,20 @@ class NativeDwgBridge(private val context: Context) {
             "layers" to emptyList<String>(),
             "entityCount" to 0
         )
+    }
+
+    /// The u32 error flag at offset 4 of a packed scene file; -1 if unreadable.
+    private fun readErrFlag(f: File): Int {
+        return try {
+            val head = ByteArray(8)
+            f.inputStream().use { it.read(head) }
+            (head[4].toInt() and 0xFF) or
+                ((head[5].toInt() and 0xFF) shl 8) or
+                ((head[6].toInt() and 0xFF) shl 16) or
+                ((head[7].toInt() and 0xFF) shl 24)
+        } catch (_: Exception) {
+            -1
+        }
     }
 
     private fun copyUriToCache(uriValue: String, name: String): File {

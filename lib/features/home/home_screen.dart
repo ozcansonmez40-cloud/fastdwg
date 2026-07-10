@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/constants/app_constants.dart';
+import '../../core/l10n/l10n.dart';
 import '../../features/app/app_controller.dart';
 import '../../features/recent_files/recent_drawings_panel.dart';
 import '../../features/recent_files/recents_screen.dart';
@@ -77,9 +78,10 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted) return;
     if (file == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Could not open the file. Please choose a .dwg file.'),
-          duration: Duration(seconds: 4),
+        SnackBar(
+          content: Text(tr('Could not open the file. Please choose a .dwg file.',
+              'Dosya açılamadı. Lütfen bir .dwg dosyası seçin.')),
+          duration: const Duration(seconds: 4),
         ),
       );
       return;
@@ -249,11 +251,11 @@ class _SearchBar extends StatelessWidget {
                 fontWeight: FontWeight.w500,
               ),
               cursorColor: AppColors.accentPrimary,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 isCollapsed: true,
                 border: InputBorder.none,
-                hintText: 'Search drawings',
-                hintStyle: TextStyle(
+                hintText: tr('Search drawings', 'Çizim ara'),
+                hintStyle: const TextStyle(
                   color: AppColors.textMuted,
                   fontSize: 15,
                   fontWeight: FontWeight.w500,
@@ -326,19 +328,20 @@ class _OpenDwgButton extends StatelessWidget {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
-                children: const [
+                children: [
                   Text(
-                    'Open DWG File',
-                    style: TextStyle(
+                    tr('Open DWG File', 'DWG Dosyası Aç'),
+                    style: const TextStyle(
                       color: Colors.white,
                       fontSize: 19,
                       fontWeight: FontWeight.w700,
                     ),
                   ),
-                  SizedBox(height: 3),
+                  const SizedBox(height: 3),
                   Text(
-                    'Browse files from your device',
-                    style: TextStyle(
+                    tr('Browse files from your device',
+                        'Cihazındaki dosyalara göz at'),
+                    style: const TextStyle(
                       color: Color(0xFFE6FBFF),
                       fontSize: 13,
                       fontWeight: FontWeight.w500,
@@ -365,10 +368,10 @@ class _TechnicalBottomNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const items = [
-      (Icons.folder_outlined, 'Files'),
-      (Icons.history, 'Recents'),
-      (Icons.settings_outlined, 'Settings'),
+    final items = [
+      (Icons.folder_outlined, tr('Files', 'Dosyalar')),
+      (Icons.history, tr('Recents', 'Son Açılanlar')),
+      (Icons.settings_outlined, tr('Settings', 'Ayarlar')),
     ];
 
     return Container(
