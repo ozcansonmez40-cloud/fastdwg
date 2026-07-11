@@ -196,10 +196,14 @@ Future<Uint8List> _renderVectorPdf(_PdfJob job) async {
   // cost two path ops each. Dropping them thins out dense drawings massively.
   final minLenSq = (0.33 / scale) * (0.33 / scale);
 
-  // Page stays white (PDF default) — a proper white-paper plot. Default stroke
-  // ~0.65pt ≈ AutoCAD's default 0.25mm line; layers with an explicit lineweight
-  // plot at their true width (1mm ≈ 2.835pt), capped so nothing is absurd.
-  const defaultLineW = 0.65;
+  // Page stays white (PDF default) — a proper white-paper plot. On a REAL
+  // sheet the default pen is a hairline (0.3pt ≈ 0.1mm, what AutoCAD plots for
+  // unweighted layers): dense plans at A3 fit / 1:200 turn into solid black
+  // blobs with anything fatter, because hatch spacing drops below the pen
+  // width. The huge fit page keeps the heavier 0.65pt so lines survive
+  // rasterised previews. Layers with an explicit lineweight plot at their
+  // true width, capped so nothing is absurd.
+  final defaultLineW = realPaper ? 0.3 : 0.65;
   final layers = scene.layers;
   final showLineWeights = job.showLineWeights;
   double lineWidthForLayer(int layerIdx) {
@@ -241,16 +245,33 @@ Future<Uint8List> _renderVectorPdf(_PdfJob job) async {
   scene.lineBatches.forEach((key, model) {
     if (hiddenLayers.contains(DwgScene.batchLayer(key))) return;
     var any = false;
+    // Sub-threshold segments are CHAINED like the viewer does, not dropped: a
+    // smoothed contour is thousands of tiny stream-order segments, and
+    // dropping each one individually erased whole curves from the plot.
+    var chainX = double.nan, chainY = double.nan; // pending chain start
+    var prevX2 = double.nan, prevY2 = double.nan; // last raw endpoint
     for (var i = 0; i + 3 < model.length; i += 4) {
       final x1 = model[i], y1 = model[i + 1];
       final x2 = model[i + 2], y2 = model[i + 3];
-      final dx = x2 - x1, dy = y2 - y1;
-      if (dx * dx + dy * dy < minLenSq) continue; // zero-length / sub-pixel
+      final gx = x1 - prevX2, gy = y1 - prevY2;
+      final continues = !chainX.isNaN &&
+          (gx * gx + gy * gy < minLenSq || (x1 == prevX2 && y1 == prevY2));
+      final sx = continues ? chainX : x1;
+      final sy = continues ? chainY : y1;
+      prevX2 = x2;
+      prevY2 = y2;
+      final dx = sx - x2, dy = sy - y2;
+      if (!(dx * dx + dy * dy >= minLenSq)) {
+        chainX = sx;
+        chainY = sy;
+        continue;
+      }
+      chainX = double.nan;
       // Segment bbox vs. region (skip lines entirely off-page).
-      final loX = x1 < x2 ? x1 : x2, hiX = x1 < x2 ? x2 : x1;
-      final loY = y1 < y2 ? y1 : y2, hiY = y1 < y2 ? y2 : y1;
+      final loX = sx < x2 ? sx : x2, hiX = sx < x2 ? x2 : sx;
+      final loY = sy < y2 ? sy : y2, hiY = sy < y2 ? y2 : sy;
       if (boxOutside(loX, loY, hiX, hiY)) continue;
-      g.moveTo(tx(x1), ty(y1));
+      g.moveTo(tx(sx), ty(sy));
       g.lineTo(tx(x2), ty(y2));
       any = true;
     }
@@ -259,6 +280,24 @@ Future<Uint8List> _renderVectorPdf(_PdfJob job) async {
     g.setLineWidth(lineWidthForLayer(DwgScene.batchLayer(key)));
     g.strokePath();
   });
+
+  // ── DOT/DASHDOT linetype marks (never emitted as segments) ──
+  if (scene.dotCount > 0) {
+    final dc = scene.dotCoords;
+    final dotR = defaultLineW * 0.8; // pen-width dot, like a plotted DOT mark
+    var anyDot = false;
+    for (var i = 0; i < scene.dotCount; i++) {
+      if (hiddenLayers.contains(scene.dotLayers[i])) continue;
+      final x = dc[i * 2], y = dc[i * 2 + 1];
+      if (boxOutside(x, y, x, y)) continue;
+      g.drawEllipse(tx(x), ty(y), dotR, dotR);
+      anyDot = true;
+    }
+    if (anyDot) {
+      g.setFillColor(ink);
+      g.fillPath();
+    }
+  }
 
   // ── Circles ──
   final cc = scene.circleCoords;

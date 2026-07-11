@@ -297,6 +297,12 @@ class _ViewerScreenState extends State<ViewerScreen> {
 
   void _onExportTap() {
     if (_renderState.scene == null || _exporting) return;
+    // Second tap while select-a-region is armed = turn the mode OFF (the
+    // button acts as a toggle, like Measure/Draw).
+    if (_exportSelectMode) {
+      setState(() => _exportSelectMode = false);
+      return;
+    }
     // Export is its own mode — drop measure/draw so taps don't conflict.
     setState(() {
       _measureMode = false;
@@ -692,7 +698,22 @@ class _ViewerScreenState extends State<ViewerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    // Back (system gesture/button or the top-bar arrow) first EXITS an active
+    // tool mode (export select / measure / draw); only a second back leaves
+    // the drawing. Backing out of the whole project mid-export-select was a
+    // recurring complaint.
+    final toolModeActive = _exportSelectMode || _measureMode || _drawMode;
+    return PopScope(
+      canPop: !toolModeActive,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        setState(() {
+          _exportSelectMode = false;
+          _measureMode = false;
+          _drawMode = false;
+        });
+      },
+      child: Scaffold(
       backgroundColor: AppColors.bgDeep,
       extendBodyBehindAppBar: _renderState.scene != null,
       appBar: _renderState.scene == null
@@ -787,6 +808,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
                   ),
           ),
         ),
+      ),
       ),
     );
   }
@@ -1483,7 +1505,9 @@ class _FloatingViewerBar extends StatelessWidget {
         child: Row(
           children: [
             IconButton(
-              onPressed: () => Navigator.of(context).pop(),
+              // maybePop respects the viewer's PopScope: first back exits an
+              // active tool mode, second back leaves the drawing.
+              onPressed: () => Navigator.of(context).maybePop(),
               icon: const Icon(Icons.arrow_back, color: AppColors.textPrimary),
             ),
             Expanded(
