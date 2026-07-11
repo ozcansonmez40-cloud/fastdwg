@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -37,7 +38,7 @@ Future<void> ensureSceneLod(DwgScene scene) async {
   lod.building = true;
   final b = scene.drawableBounds;
   final span = math.max(b.width, b.height);
-  if (span <= 0 || scene.lineSegmentCount < 200000) {
+  if (span <= 0 || scene.lineSegmentCount < 60000) {
     // Small drawings paint fast anyway — skip the extra memory.
     lod.building = false;
     lod.ready = true;
@@ -104,6 +105,173 @@ Float32List? _lodPick(DwgScene scene, int key, double minModelLen) {
     if (lod.thresholds[i] <= minModelLen) return lod.tiers[i][key];
   }
   return null;
+}
+
+/// Spatial index over the RAW segment stream — the zoomed-IN counterpart of
+/// the LOD tiers. Per batch, a QUADTREE of segment indices: nodes split until
+/// a leaf holds at most ~20k segments, so resolution adapts to density (a
+/// uniform grid over DWG extents fails here — stray far-away entities inflate
+/// the extents to km while the actual buildings collapse into one or two
+/// cells that then hold millions of segments). Zoomed in, the painter gathers
+/// only the leaves the viewport touches instead of walking every raw segment.
+/// Segment order inside a leaf stays ascending, so linetype dash runs remain
+/// consecutive and the paint-time chain decimation keeps working.
+class _QtNode {
+  _QtNode(this.minX, this.minY, this.maxX, this.maxY);
+  final double minX, minY, maxX, maxY;
+  // Leaf payload, or (on internal nodes) segments straddling the split lines.
+  Uint32List stay = _emptyU32;
+  List<_QtNode>? kids; // null → leaf
+}
+
+final Uint32List _emptyU32 = Uint32List(0);
+
+// Scratch buffers reused across batches AND frames (single-isolate paint code;
+// drawRawPoints copies its input while recording, so aliasing is safe). Fresh
+// per-batch allocations here ran to megabytes per gesture frame and the GC
+// pauses showed up as pan/zoom stutter.
+Float32List _ptsScratch = Float32List(0);
+Uint32List _candScratch = Uint32List(0);
+
+class _SceneTiles {
+  final Map<int, _QtNode> roots = {}; // batch key → quadtree root
+  bool ready = false;
+  bool building = false;
+}
+
+final Expando<_SceneTiles> _sceneTilesStore = Expando<_SceneTiles>();
+
+
+/// Builds the zoom-in quadtree index for [scene] once, chunked so the UI
+/// stays responsive.
+Future<void> ensureSceneTiles(DwgScene scene) async {
+  final t = _sceneTilesStore[scene] ??= _SceneTiles();
+  if (t.ready || t.building) return;
+  t.building = true;
+  if (scene.lineSegmentCount < 60000) {
+    // Small drawings walk their raw stream in well under a frame anyway.
+    t.building = false;
+    t.ready = true;
+    return;
+  }
+  const leafCap = 20000;
+  const maxDepth = 12;
+  var sinceYield = 0;
+  Future<void> maybeYield(int work) async {
+    sinceYield += work;
+    if (sinceYield >= 120000) {
+      sinceYield = 0;
+      await Future<void>.delayed(Duration.zero);
+    }
+  }
+
+  for (final e in scene.lineBatches.entries) {
+    final m = e.value;
+    final segs = m.length >> 2;
+    if (segs == 0) continue;
+    // Root bbox from THIS batch's own content (extents can be km of junk).
+    var mnX = double.infinity, mnY = double.infinity;
+    var mxX = double.negativeInfinity, mxY = double.negativeInfinity;
+    for (var s = 0; s < segs; s++) {
+      final i = s << 2;
+      final x1 = m[i], y1 = m[i + 1], x2 = m[i + 2], y2 = m[i + 3];
+      if (x1 < mnX) mnX = x1;
+      if (x2 < mnX) mnX = x2;
+      if (x1 > mxX) mxX = x1;
+      if (x2 > mxX) mxX = x2;
+      if (y1 < mnY) mnY = y1;
+      if (y2 < mnY) mnY = y2;
+      if (y1 > mxY) mxY = y1;
+      if (y2 > mxY) mxY = y2;
+    }
+    await maybeYield(segs);
+    final root = _QtNode(mnX, mnY, mxX, mxY);
+    final rootIds = List<int>.generate(segs, (s) => s);
+    final work = <(_QtNode, List<int>, int)>[(root, rootIds, 0)];
+    while (work.isNotEmpty) {
+      final (node, ids, depth) = work.removeLast();
+      if (ids.length <= leafCap || depth >= maxDepth) {
+        node.stay = Uint32List.fromList(ids);
+        continue;
+      }
+      final cx = (node.minX + node.maxX) / 2;
+      final cy = (node.minY + node.maxY) / 2;
+      final q = [<int>[], <int>[], <int>[], <int>[]];
+      final stay = <int>[];
+      for (final s in ids) {
+        final i = s << 2;
+        final x1 = m[i], y1 = m[i + 1], x2 = m[i + 2], y2 = m[i + 3];
+        final left = x1 <= cx && x2 <= cx;
+        final right = x1 >= cx && x2 >= cx;
+        final low = y1 <= cy && y2 <= cy;
+        final high = y1 >= cy && y2 >= cy;
+        if (left && low) {
+          q[0].add(s);
+        } else if (right && low) {
+          q[1].add(s);
+        } else if (left && high) {
+          q[2].add(s);
+        } else if (right && high) {
+          q[3].add(s);
+        } else {
+          stay.add(s); // straddles a split line
+        }
+      }
+      node.stay = Uint32List.fromList(stay);
+      node.kids = [
+        _QtNode(node.minX, node.minY, cx, cy),
+        _QtNode(cx, node.minY, node.maxX, cy),
+        _QtNode(node.minX, cy, cx, node.maxY),
+        _QtNode(cx, cy, node.maxX, node.maxY),
+      ];
+      for (var k = 0; k < 4; k++) {
+        if (q[k].isNotEmpty) work.add((node.kids![k], q[k], depth + 1));
+      }
+      await maybeYield(ids.length);
+    }
+    t.roots[e.key] = root;
+  }
+  t.ready = true;
+  t.building = false;
+}
+
+void _qtGather(_QtNode n, double mx0, double my0, double mx1, double my1,
+    List<Uint32List> out) {
+  if (n.maxX < mx0 || n.minX > mx1 || n.maxY < my0 || n.minY > my1) return;
+  if (n.stay.isNotEmpty) out.add(n.stay);
+  final kids = n.kids;
+  if (kids != null) {
+    for (final k in kids) {
+      _qtGather(k, mx0, my0, mx1, my1, out);
+    }
+  }
+}
+
+/// Indices of the raw segments worth walking for the visible model rect, or
+/// null when a full linear walk is the right call (index not built, small
+/// scene, or most of the batch on screen anyway).
+Uint32List? _tileCandidates(DwgScene scene, int key, double mx0, double my0,
+    double mx1, double my1) {
+  final t = _sceneTilesStore[scene];
+  if (t == null || !t.ready) return null;
+  final root = t.roots[key];
+  if (root == null) return null;
+  final chunks = <Uint32List>[];
+  _qtGather(root, mx0, my0, mx1, my1, chunks);
+  var n = 0;
+  for (final c in chunks) {
+    n += c.length;
+  }
+  final total = scene.lineBatches[key]!.length >> 2;
+  // Most of the batch is in view anyway → skip the merge, walk linearly.
+  if (n * 10 >= total * 7) return null;
+  if (_candScratch.length < n) _candScratch = Uint32List(n * 2);
+  var w = 0;
+  for (final c in chunks) {
+    _candScratch.setRange(w, w + c.length, c);
+    w += c.length;
+  }
+  return Uint32List.view(_candScratch.buffer, 0, n);
 }
 
 /// Millimetres represented by ONE raw model unit, from the DWG header
@@ -332,11 +500,42 @@ void _paintDwgScene(
   // LOD copy exists at (or below) this coarseness, iterate IT instead of the
   // raw millions of segments — same visual result, a fraction of the work.
   final minModelLen = ax.abs() <= 0 ? 0.0 : math.sqrt(minLenSq) / ax.abs();
+  // Zoomed IN past every LOD tier the raw stream is walked — restrict that
+  // walk to the tile-index cells the viewport touches. Model-space viewport:
+  var useTiles = false;
+  var visMinX = 0.0, visMinY = 0.0, visMaxX = 0.0, visMaxY = 0.0;
+  if (ax != 0 && ay != 0) {
+    final mxA = (0 - bx) / ax, mxB = (viewW - bx) / ax;
+    final myA = (0 - by) / ay, myB = (viewH - by) / ay;
+    visMinX = math.min(mxA, mxB);
+    visMaxX = math.max(mxA, mxB);
+    visMinY = math.min(myA, myB);
+    visMaxY = math.max(myA, myB);
+    useTiles = true;
+  }
   scene.lineBatches.forEach((key, rawModel) {
     if (hiddenLayers.contains(DwgScene.batchLayer(key))) return;
-    final model = _lodPick(scene, key, minModelLen) ?? rawModel;
+    // Two competing shortcuts: the pre-chained LOD copy (wins zoomed OUT) and
+    // the quadtree candidates over the raw stream (win zoomed IN). Per batch,
+    // walk whichever offers FEWER segments this frame.
+    Uint32List? cand;
+    if (useTiles) {
+      cand = _tileCandidates(scene, key, visMinX, visMinY, visMaxX, visMaxY);
+    }
+    final lodModel = _lodPick(scene, key, minModelLen);
+    if (cand != null &&
+        lodModel != null &&
+        (lodModel.length >> 2) <= cand.length) {
+      cand = null; // the LOD copy is the smaller walk
+    }
+    final model = cand != null ? rawModel : (lodModel ?? rawModel);
     if (model.isEmpty) return;
-    final pts = Float32List(model.length); // upper bound: 4 floats / segment
+    final segCount = cand != null ? cand.length : model.length >> 2;
+    if (segCount == 0) return;
+    if (_ptsScratch.length < segCount * 4) {
+      _ptsScratch = Float32List(segCount * 8);
+    }
+    final pts = _ptsScratch; // upper bound: 4 floats / segment
     var w = 0;
     // Sub-pixel segments are CHAINED, not dropped: a smoothed contour is
     // thousands of tiny segments in stream order (the native writer emits
@@ -345,7 +544,8 @@ void _paintDwgScene(
     // decimated segment as soon as the running chord clears the threshold.
     var chainX = double.nan, chainY = double.nan; // pending chain start
     var prevX2 = double.nan, prevY2 = double.nan; // last raw endpoint
-    for (var i = 0; i + 3 < model.length; i += 4) {
+    for (var c = 0; c < segCount; c++) {
+      final i = (cand != null ? cand[c] : c) << 2;
       final x1 = ax * model[i] + bx;
       final y1 = ay * model[i + 1] + by;
       final x2 = ax * model[i + 2] + bx;
@@ -1282,6 +1482,13 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
   Size _frozenSize = Size.zero;
   int _frozenParams = 0; // appearance key the snapshot was taken under
   bool _capturing = false;
+  // Record cost (ms) of the last settled live frame, reported by the painter.
+  // Below _cheapFrameMs the layer re-rasterises fast enough that sheet drags
+  // stay fluid WITHOUT a snapshot — so no capture runs and zoomed-in pan/zoom
+  // is byte-for-byte the original code path (no GPU readbacks at all).
+  double _lastFullPaintMs = double.infinity;
+  static const double _cheapFrameMs = 25.0;
+
 
   int _appearanceKey() => Object.hash(
         identityHashCode(widget.scene),
@@ -1291,11 +1498,23 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
         widget.showLineWeights,
       );
 
-  /// Snapshot the settled scene layer (post-frame; no-op while interacting or
-  /// when the current view already matches the stored snapshot).
+  /// Snapshot the settled scene layer — DEBOUNCED: the GPU readback runs only
+  /// after ~0.7s of stillness and a new gesture cancels it, so rapid pan/zoom
+  /// never pays for captures between strokes (an immediate capture on every
+  /// finger-lift made continuous panning feel worse than no snapshot at all).
+  Timer? _freezeTimer;
   void _scheduleFreeze() {
+    _freezeTimer?.cancel();
+    _freezeTimer = Timer(const Duration(milliseconds: 700), _captureFrozen);
+  }
+
+  void _captureFrozen() {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted || _interacting || _capturing) return;
+      // Cheap frames don't need freezing — live re-rasterisation already keeps
+      // sheet drags fluid, and skipping the toImage readback here is what keeps
+      // zoomed-in pan/zoom feeling like the original app.
+      if (_lastFullPaintMs < _cheapFrameMs) return;
       final params = _appearanceKey();
       if (_frozen != null &&
           _frozenScale == _scale &&
@@ -1373,8 +1592,10 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
     _loadAnnotations(widget.initialAnnotations);
     // Build the zoomed-out LOD copies off the first frame (chunked async) so
     // pan/zoom at extents iterates thousands of pre-chained chords instead of
-    // millions of raw segments.
+    // millions of raw segments; the tile index does the same for zoomed-IN
+    // views (only viewport cells are walked).
     ensureSceneLod(widget.scene);
+    ensureSceneTiles(widget.scene);
     // First settled frame → first gesture snapshot.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _scheduleFreeze();
@@ -1416,6 +1637,7 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
   @override
   void dispose() {
     _focusCtl?.dispose();
+    _freezeTimer?.cancel();
     _frozen?.dispose();
     super.dispose();
   }
@@ -1633,6 +1855,7 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
       _frozen?.dispose();
       _frozen = null;
       ensureSceneLod(widget.scene);
+      ensureSceneTiles(widget.scene);
     }
     // Appearance changed (layer toggled, colours, lineweights) or a new scene
     // arrived: the next full-quality frame differs — re-snapshot it.
@@ -2094,6 +2317,8 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
             _gestureStartScale = _scale;
             _gestureStartOffset = _offset;
             _gestureFocal = details.localFocalPoint;
+            // A new stroke: don't waste the raster thread on a pending capture.
+            _freezeTimer?.cancel();
             if (!_interacting) setState(() => _interacting = true);
           },
           onScaleUpdate: (details) {
@@ -2212,6 +2437,9 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
                         : null,
                     frozenScale: _frozenScale,
                     frozenOffset: _frozenOffset,
+                    // No setState: the value only gates the NEXT debounced
+                    // capture, it never needs a rebuild of its own.
+                    onLivePaintCost: (ms) => _lastFullPaintMs = ms,
                   ),
                   child: const SizedBox.expand(),
                 ),
@@ -2528,6 +2756,7 @@ class _DwgScenePainter extends CustomPainter {
     this.frozen,
     this.frozenScale = 1.0,
     this.frozenOffset = Offset.zero,
+    this.onLivePaintCost,
   });
 
   final DwgScene scene;
@@ -2544,6 +2773,10 @@ class _DwgScenePainter extends CustomPainter {
   final ui.Image? frozen;
   final double frozenScale;
   final Offset frozenOffset;
+  // Reports how long a settled (non-fast, non-snapshot) frame took to paint.
+  // The state uses it to skip snapshot captures entirely when live painting is
+  // already cheap — zoomed-in views then behave exactly like the original app.
+  final ValueChanged<double>? onLivePaintCost;
   // Drawing-color = Black/White: force all geometry to one contrasting colour.
   final bool monochrome;
   // Background is white (vs black) — flips entity-colour adjustments.
@@ -2574,6 +2807,7 @@ class _DwgScenePainter extends CustomPainter {
     // Model → screen affine, fitted to the current pan/zoom.
     final transform =
         _computeTransform(size, scene.drawableBounds, viewScale, viewOffset);
+    final sw = (!fast && onLivePaintCost != null) ? (Stopwatch()..start()) : null;
     // Geometry + text (shared with the export renderer so both look identical).
     _paintDwgScene(
       canvas,
@@ -2587,6 +2821,9 @@ class _DwgScenePainter extends CustomPainter {
       showLineWeights: showLineWeights,
       fast: fast,
     );
+    if (sw != null) {
+      onLivePaintCost!(sw.elapsedMicroseconds / 1000.0);
+    }
   }
 
   @override
