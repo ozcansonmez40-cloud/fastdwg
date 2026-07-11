@@ -4,7 +4,8 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show listEquals, setEquals;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, listEquals, setEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 
@@ -1155,7 +1156,14 @@ class DwgViewport extends StatelessWidget {
     this.photoMode = false,
     this.onPhotoPlace,
     this.onPhotoTap,
+    this.freezeSignal,
   });
+
+  /// Bump the value right before opening a sheet/panel over the drawing: the
+  /// canvas snapshots the settled frame immediately (ignoring the paint-cost
+  /// gate) so the sheet's drag animation composites one image instead of
+  /// re-rasterising the scene every frame — on ANY size drawing.
+  final ValueListenable<int>? freezeSignal;
 
   final bool showOverview;
   final String title;
@@ -1298,6 +1306,7 @@ class DwgViewport extends StatelessWidget {
                       photoMode: photoMode,
                       onPhotoPlace: onPhotoPlace,
                       onPhotoTap: onPhotoTap,
+                      freezeSignal: freezeSignal,
                     ),
               ),
             ),
@@ -1388,12 +1397,14 @@ class _InteractiveDwgCanvas extends StatefulWidget {
     this.photoMode = false,
     this.onPhotoPlace,
     this.onPhotoTap,
+    this.freezeSignal,
   });
 
   final List<PhotoMarker> photos;
   final bool photoMode;
   final ValueChanged<Offset>? onPhotoPlace;
   final ValueChanged<String>? onPhotoTap;
+  final ValueListenable<int>? freezeSignal;
 
   final DwgScene scene;
   final Set<int> hiddenLayers;
@@ -1508,13 +1519,19 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
     _freezeTimer = Timer(const Duration(milliseconds: 700), _captureFrozen);
   }
 
-  void _captureFrozen() {
+  // A sheet/panel is about to open over the drawing → snapshot NOW regardless
+  // of paint cost: sheet drags re-rasterise the scene layer every frame, and
+  // even a ~15ms live paint reads as sluggish there (small drawings included).
+  void _onFreezeSignal() => _captureFrozen(force: true);
+
+  void _captureFrozen({bool force = false}) {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted || _interacting || _capturing) return;
-      // Cheap frames don't need freezing — live re-rasterisation already keeps
-      // sheet drags fluid, and skipping the toImage readback here is what keeps
-      // zoomed-in pan/zoom feeling like the original app.
-      if (_lastFullPaintMs < _cheapFrameMs) return;
+      // Cheap frames don't need idle freezing — live re-rasterisation keeps
+      // gestures fluid, and skipping the toImage readback here is what keeps
+      // zoomed-in pan/zoom feeling like the original app. A sheet opening
+      // (force) overrides this: compositing fluidity beats readback cost.
+      if (!force && _lastFullPaintMs < _cheapFrameMs) return;
       final params = _appearanceKey();
       if (_frozen != null &&
           _frozenScale == _scale &&
@@ -1596,6 +1613,7 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
     // views (only viewport cells are walked).
     ensureSceneLod(widget.scene);
     ensureSceneTiles(widget.scene);
+    widget.freezeSignal?.addListener(_onFreezeSignal);
     // First settled frame → first gesture snapshot.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _scheduleFreeze();
@@ -1636,6 +1654,7 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
 
   @override
   void dispose() {
+    widget.freezeSignal?.removeListener(_onFreezeSignal);
     _focusCtl?.dispose();
     _freezeTimer?.cancel();
     _frozen?.dispose();
@@ -1848,6 +1867,10 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
         _reportAfterFrame();
         _persistAnnotations();
       }
+    }
+    if (!identical(oldWidget.freezeSignal, widget.freezeSignal)) {
+      oldWidget.freezeSignal?.removeListener(_onFreezeSignal);
+      widget.freezeSignal?.addListener(_onFreezeSignal);
     }
     if (!identical(oldWidget.scene, widget.scene)) {
       _snapIndex = null;

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -55,6 +56,11 @@ class _ViewerScreenState extends State<ViewerScreen> {
   /// share it as PDF + PNG.
   final DwgExportService _exportService = DwgExportService();
   bool _exportSelectMode = false; // dragging a rectangle to export
+
+  // Bumped right before any sheet opens over the drawing: tells the canvas to
+  // snapshot the settled frame so the sheet's drag stays fluid on every
+  // drawing size (without it, small drawings live-painted under the sheet).
+  final ValueNotifier<int> _freezeSignal = ValueNotifier<int>(0);
   bool _exporting = false; // rendering/sharing in progress
   String _exportPaper = 'fit'; // 'fit' | 'a4' | 'a3'
   int? _exportScale; // 100 → 1:100 true scale; null → fit to page
@@ -308,6 +314,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
       _measureMode = false;
       _drawMode = false;
     });
+    _freezeSignal.value++;
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: AppColors.bgDeep,
@@ -481,6 +488,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
 
   void _showSettings() {
     if (_renderState.scene == null) return;
+    _freezeSignal.value++;
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: AppColors.bgDeep,
@@ -670,6 +678,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
   void _showLayerPanel() {
     final scene = _renderState.scene;
     if (scene == null) return;
+    _freezeSignal.value++;
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: AppColors.bgDeep,
@@ -785,6 +794,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
                         onDrawToolChanged: _setDrawTool,
                         onMeasureClear: _clearMeasure,
                         onMeasureUndo: _undoMeasure,
+                        freezeSignal: _freezeSignal,
                       ),
                       if (_searchOpen)
                         Positioned(
@@ -953,6 +963,7 @@ class _FullScreenDrawing extends StatelessWidget {
     this.onDrawToolChanged,
     this.onMeasureClear,
     this.onMeasureUndo,
+    this.freezeSignal,
   });
 
   final RecentFile file;
@@ -996,6 +1007,7 @@ class _FullScreenDrawing extends StatelessWidget {
   final ValueChanged<DrawTool>? onDrawToolChanged;
   final VoidCallback? onMeasureClear;
   final VoidCallback? onMeasureUndo;
+  final ValueListenable<int>? freezeSignal;
 
   @override
   Widget build(BuildContext context) {
@@ -1031,6 +1043,7 @@ class _FullScreenDrawing extends StatelessWidget {
             exportSelectMode: exportSelectMode,
             onExportRectSelected: onExportRectSelected,
             onVisibleBoundsChanged: onVisibleBoundsChanged,
+            freezeSignal: freezeSignal,
           ),
         ),
         Positioned(
