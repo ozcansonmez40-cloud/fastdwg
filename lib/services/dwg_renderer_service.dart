@@ -33,8 +33,13 @@ class DwgRendererState {
 class DwgRendererService {
   static const MethodChannel _channel = MethodChannel('fastdwg/dwg_renderer');
 
-  Future<DwgRendererState> prepare(RecentFile file) async {
+  /// [onStage] reports coarse progress ('decode' → native parser running,
+  /// 'scene' → packed scene loading) so the loading screen can narrate what
+  /// is happening instead of spinning silently for 15-20s on a first open.
+  Future<DwgRendererState> prepare(RecentFile file,
+      {ValueChanged<String>? onStage}) async {
     try {
+      onStage?.call('decode');
       // No timeout here on purpose: large drawings (100 MB+) legitimately take
       // a while to decode, and a timeout would abort them. Parse failures are
       // handled by the scene==null guard below instead.
@@ -43,6 +48,7 @@ class DwgRendererService {
         {'uri': file.uri, 'name': file.name},
       );
 
+      onStage?.call('scene');
       final scene = await _readScene(result?['scenePath']);
       final status = result?['status'] as String?;
       // The native side said "ready" but we couldn't load a scene (decode threw

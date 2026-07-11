@@ -1,5 +1,9 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/l10n/l10n.dart';
@@ -61,6 +65,10 @@ class _ViewerScreenState extends State<ViewerScreen> {
   // snapshot the settled frame so the sheet's drag stays fluid on every
   // drawing size (without it, small drawings live-painted under the sheet).
   final ValueNotifier<int> _freezeSignal = ValueNotifier<int>(0);
+
+  // Coarse first-open progress ('decode' → native parser, 'scene' → loading
+  // the packed scene) shown by the loading view.
+  String _loadStage = 'decode';
   bool _exporting = false; // rendering/sharing in progress
   String _exportPaper = 'fit'; // 'fit' | 'a4' | 'a3'
   int? _exportScale; // 100 → 1:100 true scale; null → fit to page
@@ -216,7 +224,9 @@ class _ViewerScreenState extends State<ViewerScreen> {
 
   Future<void> _prepareRenderer() async {
     final service = context.read<AppController>().dwgRendererService;
-    final state = await service.prepare(widget.file);
+    final state = await service.prepare(widget.file, onStage: (stage) {
+      if (mounted) setState(() => _loadStage = stage);
+    });
     if (!mounted) return;
     setState(() {
       _renderState = state;
@@ -748,8 +758,12 @@ class _ViewerScreenState extends State<ViewerScreen> {
                     ? _ViewerErrorView(
                         fileName: widget.file.name,
                         message: _renderState.message,
+                        filePath: widget.file.uri,
                       )
-                    : _ViewerLoadingView(fileName: widget.file.name))
+                    : _ViewerLoadingView(
+                        fileName: widget.file.name,
+                        stage: _loadStage,
+                      ))
                 : Stack(
                     children: [
                       _FullScreenDrawing(
@@ -826,13 +840,42 @@ class _ViewerScreenState extends State<ViewerScreen> {
 
 /// Shown while the native parser decodes the file (can take a few seconds on a
 /// large drawing).
-class _ViewerLoadingView extends StatelessWidget {
-  const _ViewerLoadingView({required this.fileName});
+class _ViewerLoadingView extends StatefulWidget {
+  const _ViewerLoadingView({required this.fileName, this.stage = 'decode'});
 
   final String fileName;
+  final String stage; // 'decode' | 'scene'
+
+  @override
+  State<_ViewerLoadingView> createState() => _ViewerLoadingViewState();
+}
+
+class _ViewerLoadingViewState extends State<_ViewerLoadingView> {
+  // After a few seconds of decoding, reassure the user that a long first open
+  // is normal (and one-time): without this, big files look frozen and get
+  // force-closed mid-parse.
+  Timer? _hintTimer;
+  bool _showSlowHint = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _hintTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted) setState(() => _showSlowHint = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _hintTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final stageText = widget.stage == 'scene'
+        ? tr('Preparing the view…', 'Görünüm hazırlanıyor…')
+        : tr('Decoding the drawing…', 'Çizim çözülüyor…');
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -840,7 +883,7 @@ class _ViewerLoadingView extends StatelessWidget {
           const WalkingWorker(size: 104),
           const SizedBox(height: 14),
           Text(
-            tr('Opening drawing…', 'Çizim açılıyor…'),
+            stageText,
             style: TextStyle(
               color: AppColors.textPrimary,
               fontSize: 16,
@@ -851,13 +894,33 @@ class _ViewerLoadingView extends StatelessWidget {
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 280),
             child: Text(
-              fileName,
+              widget.fileName,
               textAlign: TextAlign.center,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: AppColors.textMuted, fontSize: 13),
             ),
           ),
+          if (_showSlowHint) ...[
+            const SizedBox(height: 14),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 300),
+              child: Text(
+                tr(
+                  'Large drawings can take 15-20 seconds the first time. '
+                  'The next open will be instant.',
+                  'Büyük çizimler ilk açılışta 15-20 saniye sürebilir. '
+                  'Bir sonraki açılış anlık olacak.',
+                ),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: AppColors.textMuted,
+                  fontSize: 12,
+                  height: 1.4,
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -867,10 +930,25 @@ class _ViewerLoadingView extends StatelessWidget {
 /// Shown when the file is corrupt or its DWG version isn't supported — a clean
 /// message instead of a crash or a blank screen.
 class _ViewerErrorView extends StatelessWidget {
-  const _ViewerErrorView({required this.fileName, this.message});
+  const _ViewerErrorView({required this.fileName, this.message, this.filePath});
 
   final String fileName;
   final String? message;
+
+  /// Local path of the failing file — offered for sharing so problem files
+  /// can reach the developer for analysis.
+  final String? filePath;
+
+  Future<void> _shareFile() async {
+    final path = filePath;
+    if (path == null) return;
+    final f = File(path);
+    if (!f.existsSync()) return;
+    await Share.shareXFiles(
+      [XFile(path, mimeType: 'application/octet-stream')],
+      text: 'FastDWG could not open this drawing: $fileName',
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -913,6 +991,33 @@ class _ViewerErrorView extends StatelessWidget {
                 side: const BorderSide(color: AppColors.accentPrimary),
               ),
             ),
+            if (filePath != null) ...[
+              const SizedBox(height: 10),
+              TextButton.icon(
+                onPressed: _shareFile,
+                icon: const Icon(Icons.ios_share, size: 18),
+                label: Text(tr('Share file for analysis',
+                    'Dosyayı incelenmek üzere paylaş')),
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.textSecondary,
+                ),
+              ),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 300),
+                child: Text(
+                  tr(
+                    'Send the file to the developer so this format can be supported.',
+                    'Bu formatın desteklenebilmesi için dosyayı geliştiriciye gönderebilirsin.',
+                  ),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: AppColors.textMuted,
+                    fontSize: 11.5,
+                    height: 1.35,
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),

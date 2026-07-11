@@ -2318,13 +2318,29 @@ std::string parse_dwg_to_scene_json(const char* file_path, int* out_error) {
   };
   const auto _tStart = _clock::now();
 
+  // DXF files route through LibreDWG's importer (needs write support to be
+  // compiled in); everything else is a binary DWG.
+  bool is_dxf = false;
+  {
+    const size_t n = std::strlen(file_path);
+    if (n >= 4) {
+      const char* e = file_path + n - 4;
+      is_dxf = (e[0] == '.') &&
+               (e[1] == 'd' || e[1] == 'D') &&
+               (e[2] == 'x' || e[2] == 'X') &&
+               (e[3] == 'f' || e[3] == 'F');
+    }
+  }
+
   // Read version before LibreDWG so we can always report it.
-  const std::string ver = read_dwg_version_string(file_path);
+  const std::string ver = is_dxf ? std::string("DXF")
+                                 : read_dwg_version_string(file_path);
 
   Dwg_Data dwg;
   std::memset(&dwg, 0, sizeof(Dwg_Data));
 
-  const int error = dwg_read_file(file_path, &dwg);
+  const int error = is_dxf ? dxf_read_file(file_path, &dwg)
+                           : dwg_read_file(file_path, &dwg);
   const auto _tParsed = _clock::now();
   if (out_error) *out_error = error;
 

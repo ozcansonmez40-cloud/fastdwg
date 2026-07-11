@@ -104,11 +104,12 @@ class MainActivity : FlutterActivity() {
             ?: currentIntent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
             ?: return null
         val metadata = readUriMetadata(data)
+        val ext = metadata.name.substringAfterLast('.', "dwg").lowercase()
         val persistentPath = copyIntentUriToCache(data, metadata.name) ?: return mapOf(
             "uri" to "",
             "sourceUri" to data.toString(),
             "name" to metadata.name,
-            "fileExtension" to "dwg",
+            "fileExtension" to ext,
             "fileSizeBytes" to metadata.sizeBytes,
             "error" to "This provider did not grant readable access to the DWG file."
         )
@@ -117,7 +118,7 @@ class MainActivity : FlutterActivity() {
             "uri" to persistentPath,
             "sourceUri" to data.toString(),
             "name" to metadata.name,
-            "fileExtension" to "dwg",
+            "fileExtension" to ext,
             "fileSizeBytes" to metadata.sizeBytes
         )
     }

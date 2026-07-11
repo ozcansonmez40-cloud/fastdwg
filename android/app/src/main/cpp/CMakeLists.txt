@@ -19,7 +19,10 @@ find_library(log-lib log)
 
 if(EXISTS "${LIBREDWG_SOURCE_DIR}/CMakeLists.txt")
     set(LIBREDWG_LIBONLY ON CACHE BOOL "Build only the LibreDWG library" FORCE)
-    set(LIBREDWG_DISABLE_WRITE ON CACHE BOOL "Disable LibreDWG write support" FORCE)
+    # Write support stays enabled because LibreDWG's DXF IMPORTER (in_dxf.c,
+    # dxf_read_file) only compiles with it — we never write DWGs, but we do
+    # open .dxf files. JSON stays disabled, which keeps the build static.
+    set(LIBREDWG_DISABLE_WRITE OFF CACHE BOOL "Keep write support: DXF import needs in_dxf.c" FORCE)
     set(LIBREDWG_DISABLE_JSON ON CACHE BOOL "Disable LibreDWG JSON support" FORCE)
     set(DISABLE_WERROR ON CACHE BOOL "Disable LibreDWG Werror" FORCE)
     set(ENABLE_LTO OFF CACHE BOOL "Disable LibreDWG LTO for Android builds" FORCE)

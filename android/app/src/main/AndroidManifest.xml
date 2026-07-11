@@ -50,8 +50,17 @@
             <data android:mimeType="application/x-dwg" />
             <data android:mimeType="image/vnd.dwg" />
             <data android:mimeType="drawing/dwg" />
+            <data android:mimeType="image/vnd.dxf" />
+            <data android:mimeType="application/dxf" />
+            <data android:mimeType="application/x-dxf" />
+            <!-- Most file managers (Downloads, Telegram, Drive) hand CAD files
+                 over as a generic byte stream; without this the "Open with"
+                 chooser never offers FastDWG for a tapped .dwg/.dxf. -->
+            <data android:mimeType="application/octet-stream" />
             <data android:pathPattern=".*\\.dwg" />
             <data android:pathPattern=".*\\.DWG" />
+            <data android:pathPattern=".*\\.dxf" />
+            <data android:pathPattern=".*\\.DXF" />
         </intent-filter>
         <intent-filter>
             <action android:name="android.intent.action.SEND" />
@@ -66,6 +75,9 @@
             <data android:mimeType="application/x-dwg" />
             <data android:mimeType="image/vnd.dwg" />
             <data android:mimeType="drawing/dwg" />
+            <data android:mimeType="image/vnd.dxf" />
+            <data android:mimeType="application/dxf" />
+            <data android:mimeType="application/x-dxf" />
             <data android:mimeType="application/octet-stream" />
         </intent-filter>
     </activity>

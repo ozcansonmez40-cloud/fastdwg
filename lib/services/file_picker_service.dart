@@ -20,7 +20,7 @@ class FilePickerService {
     if (file == null) return null;
 
     final ext = file.name.split('.').last.toLowerCase();
-    if (ext != 'dwg') return null;
+    if (ext != 'dwg' && ext != 'dxf') return null;
 
     if (file.bytes != null && file.bytes!.isNotEmpty) {
       final savedPath = await _saveBytesToAppDir(file.name, file.bytes!);
@@ -28,7 +28,7 @@ class FilePickerService {
         id: savedPath,
         name: file.name,
         uri: savedPath,
-        fileExtension: 'dwg',
+        fileExtension: ext,
         lastOpenedAt: DateTime.now(),
         fileSizeBytes: file.bytes!.length,
       );
@@ -45,7 +45,7 @@ class FilePickerService {
           id: uri,
           name: file.name,
           uri: uri,
-          fileExtension: 'dwg',
+          fileExtension: ext,
           lastOpenedAt: DateTime.now(),
           fileSizeBytes: file.size,
         );
@@ -62,7 +62,7 @@ class FilePickerService {
           id: savedPath,
           name: file.name,
           uri: savedPath,
-          fileExtension: 'dwg',
+          fileExtension: ext,
           lastOpenedAt: DateTime.now(),
           fileSizeBytes: bytes.length,
         );
@@ -74,7 +74,7 @@ class FilePickerService {
       id: uri,
       name: file.name,
       uri: uri,
-      fileExtension: 'dwg',
+      fileExtension: ext,
       lastOpenedAt: DateTime.now(),
       fileSizeBytes: file.size,
     );
