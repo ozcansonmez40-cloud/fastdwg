@@ -275,6 +275,78 @@ Uint32List? _tileCandidates(DwgScene scene, int key, double mx0, double my0,
   return Uint32List.view(_candScratch.buffer, 0, n);
 }
 
+final Expando<DwgBounds> _contentBoundsStore = Expando<DwgBounds>();
+
+/// Tight bounds of the drawing's MAIN content: bins all geometry into a grid
+/// and keeps the cells holding a meaningful share (≥2% of the densest), so a
+/// stray far-away entity or detached sub-plan doesn't keep the real drawing
+/// tiny (or off-screen) at open/fit. Runs the grid TWICE — the second pass
+/// re-grids inside the first box, so even when junk inflates the extents to
+/// hundreds of km and the whole drawing collapses into one coarse cell, the
+/// final box hugs the actual content. Falls back to the full drawable bounds
+/// when in doubt.
+DwgBounds computeContentBounds(DwgScene scene) {
+  final cached = _contentBoundsStore[scene];
+  if (cached != null) return cached;
+  var box = scene.drawableBounds;
+  for (var pass = 0; pass < 2; pass++) {
+    final fw = box.width, fh = box.height;
+    if (fw <= 0 || fh <= 0 || !fw.isFinite || !fh.isFinite) break;
+    const grid = 120;
+    final counts = Int32List(grid * grid);
+    var maxC = 0, total = 0;
+    void bin(double x, double y) {
+      if (!x.isFinite || !y.isFinite) return;
+      // Points outside the current box (pass 2) are junk by definition here.
+      if (x < box.minX || x > box.maxX || y < box.minY || y > box.maxY) return;
+      var gx = ((x - box.minX) / fw * (grid - 1)).floor();
+      var gy = ((y - box.minY) / fh * (grid - 1)).floor();
+      gx = gx < 0 ? 0 : (gx >= grid ? grid - 1 : gx);
+      gy = gy < 0 ? 0 : (gy >= grid ? grid - 1 : gy);
+      final c = ++counts[gy * grid + gx];
+      if (c > maxC) maxC = c;
+      total++;
+    }
+
+    scene.lineBatches.forEach((_, m) {
+      for (var i = 0; i + 1 < m.length; i += 2) {
+        bin(m[i], m[i + 1]);
+      }
+    });
+    final cc = scene.circleCoords;
+    for (var i = 0; i < scene.circleCount; i++) {
+      bin(cc[i * 3], cc[i * 3 + 1]);
+    }
+    for (final t in scene.texts) {
+      bin(t.x, t.y);
+    }
+    if (total < 200 || maxC == 0) break;
+
+    final thr = maxC * 0.02;
+    var gx0 = grid, gy0 = grid, gx1 = -1, gy1 = -1;
+    for (var gy = 0; gy < grid; gy++) {
+      for (var gx = 0; gx < grid; gx++) {
+        if (counts[gy * grid + gx] < thr) continue;
+        if (gx < gx0) gx0 = gx;
+        if (gx > gx1) gx1 = gx;
+        if (gy < gy0) gy0 = gy;
+        if (gy > gy1) gy1 = gy;
+      }
+    }
+    if (gx1 < gx0 || gy1 < gy0) break;
+    final cw = fw / grid, ch = fh / grid;
+    const pad = 0.5; // half-cell margin
+    box = DwgBounds(
+      minX: box.minX + (gx0 - pad) * cw,
+      minY: box.minY + (gy0 - pad) * ch,
+      maxX: box.minX + (gx1 + 1 + pad) * cw,
+      maxY: box.minY + (gy1 + 1 + pad) * ch,
+    );
+  }
+  _contentBoundsStore[scene] = box;
+  return box;
+}
+
 /// Millimetres represented by ONE raw model unit, from the DWG header
 /// $INSUNITS. When the drawing is unitless (0) or an unknown code we fall back
 /// to millimetres, which was the previous fixed assumption.
@@ -1572,6 +1644,8 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
   }
   // Tight bounds of the drawing's main content, for the fit button (cached).
   DwgBounds? _fitBounds;
+  // One-time instant framing of the content box at first layout.
+  bool _openedOnContent = false;
   int _dragMeas = -1; // measurement being dragged
   int _dragPt = -1; // its point index
   (int, int) _dragCandidate = (-1, -1); // point the finger landed on (maybe drag)
@@ -1708,14 +1782,14 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
     _animateView(vs, Offset(ox, oy), m);
   }
 
-  // Frames model-box [b] tightly in the view (centred, filling it minus a small
-  // margin) by animating scale + offset there.
-  void _fitToBounds(DwgBounds b) {
-    if (_canvasW <= 0 || _canvasH <= 0) return;
+  // The (scale, offset) pair that frames model-box [b] tightly in the view
+  // (centred, filling it minus a small margin), or null if not computable yet.
+  (double, Offset)? _viewFraming(DwgBounds b) {
+    if (_canvasW <= 0 || _canvasH <= 0) return null;
     final db = widget.scene.drawableBounds;
     const padding = 18.0;
     final drawW = _canvasW - padding * 2, drawH = _canvasH - padding * 2;
-    if (drawW <= 0 || drawH <= 0 || b.width <= 0 || b.height <= 0) return;
+    if (drawW <= 0 || drawH <= 0 || b.width <= 0 || b.height <= 0) return null;
     final baseScale = (drawW / db.width < drawH / db.height)
         ? drawW / db.width
         : drawH / db.height;
@@ -1729,67 +1803,17 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
     final mx = (b.minX + b.maxX) / 2, my = (b.minY + b.maxY) / 2;
     final ox = vs * (cx - baseScale * mx - originX + db.minX * baseScale);
     final oy = vs * (cy + baseScale * my - originY - db.minY * baseScale);
-    _animateView(vs, Offset(ox, oy), null);
+    return (vs, Offset(ox, oy));
   }
 
-  // Tight bounds of the drawing's MAIN cluster: bins all geometry into a grid
-  // and keeps the cells holding a meaningful share (≥2% of the densest), so a
-  // detached far sub-plan doesn't keep the main plan tiny. Falls back to the
-  // full drawable bounds for ordinary single-view drawings.
-  DwgBounds _computeFitBounds() {
-    final scene = widget.scene;
-    final db = scene.drawableBounds;
-    final fw = db.width, fh = db.height;
-    if (fw <= 0 || fh <= 0) return db;
-    const grid = 120;
-    final counts = Int32List(grid * grid);
-    var maxC = 0, total = 0;
-    void bin(double x, double y) {
-      if (!x.isFinite || !y.isFinite) return;
-      var gx = ((x - db.minX) / fw * (grid - 1)).floor();
-      var gy = ((y - db.minY) / fh * (grid - 1)).floor();
-      gx = gx < 0 ? 0 : (gx >= grid ? grid - 1 : gx);
-      gy = gy < 0 ? 0 : (gy >= grid ? grid - 1 : gy);
-      final c = ++counts[gy * grid + gx];
-      if (c > maxC) maxC = c;
-      total++;
-    }
-
-    scene.lineBatches.forEach((_, m) {
-      for (var i = 0; i + 1 < m.length; i += 2) {
-        bin(m[i], m[i + 1]);
-      }
-    });
-    final cc = scene.circleCoords;
-    for (var i = 0; i < scene.circleCount; i++) {
-      bin(cc[i * 3], cc[i * 3 + 1]);
-    }
-    for (final t in scene.texts) {
-      bin(t.x, t.y);
-    }
-    if (total < 200 || maxC == 0) return db;
-
-    final thr = maxC * 0.02;
-    var gx0 = grid, gy0 = grid, gx1 = -1, gy1 = -1;
-    for (var gy = 0; gy < grid; gy++) {
-      for (var gx = 0; gx < grid; gx++) {
-        if (counts[gy * grid + gx] < thr) continue;
-        if (gx < gx0) gx0 = gx;
-        if (gx > gx1) gx1 = gx;
-        if (gy < gy0) gy0 = gy;
-        if (gy > gy1) gy1 = gy;
-      }
-    }
-    if (gx1 < gx0 || gy1 < gy0) return db;
-    final cw = fw / grid, ch = fh / grid;
-    final pad = 0.5; // half-cell margin
-    return DwgBounds(
-      minX: db.minX + (gx0 - pad) * cw,
-      minY: db.minY + (gy0 - pad) * ch,
-      maxX: db.minX + (gx1 + 1 + pad) * cw,
-      maxY: db.minY + (gy1 + 1 + pad) * ch,
-    );
+  // Frames model-box [b] with an animation (fit button, zoom-extents).
+  void _fitToBounds(DwgBounds b) {
+    final f = _viewFraming(b);
+    if (f == null) return;
+    _animateView(f.$1, f.$2, null);
   }
+
+  // See [computeContentBounds]; cached per scene in [_fitBounds].
 
   // Animates the view (scale + offset) to a target; optional [highlight] flashes
   // a marker at a model point. Shared by search "zoom to" and the fit button.
@@ -1823,7 +1847,7 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
       // the screen) instead of the raw extents — a multi-plan sheet's full
       // bounds would just reproduce the small opening view.
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _fitToBounds(_fitBounds ??= _computeFitBounds());
+        if (mounted) _fitToBounds(_fitBounds ??= computeContentBounds(widget.scene));
       });
     }
     // Build the snap index ahead of the first tap (off the gesture path) so the
@@ -1875,6 +1899,7 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
     if (!identical(oldWidget.scene, widget.scene)) {
       _snapIndex = null;
       _fitBounds = null;
+      _openedOnContent = false;
       _frozen?.dispose();
       _frozen = null;
       ensureSceneLod(widget.scene);
@@ -2266,6 +2291,23 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
       builder: (context, constraints) {
         _canvasW = constraints.maxWidth;
         _canvasH = constraints.maxHeight;
+        // FIRST layout: open framed on the drawing's actual content instead of
+        // the raw extents — a stray far-away entity otherwise opens the file
+        // on a mostly-empty view with the real drawing microscopic in a
+        // corner. Instant (no animation): this IS the opening view. A saved
+        // camera, arriving right after, still overrides it.
+        if (!_openedOnContent && _scale == 1.0 && _offset == Offset.zero) {
+          _openedOnContent = true;
+          final cb = _fitBounds ??= computeContentBounds(widget.scene);
+          final db = widget.scene.drawableBounds;
+          if (cb.width < db.width * 0.85 || cb.height < db.height * 0.85) {
+            final f = _viewFraming(cb);
+            if (f != null) {
+              _scale = f.$1;
+              _offset = f.$2;
+            }
+          }
+        }
         _transform = _computeTransform(
           Size(_canvasW, _canvasH),
           widget.scene.drawableBounds,
