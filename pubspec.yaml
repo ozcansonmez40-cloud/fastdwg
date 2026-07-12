@@ -60,9 +60,11 @@ flutter_launcher_icons:
   android: true
   ios: false
   image_path: "assets/icon/app_icon.png"
-  # Android adaptive icon: dark navy plate (brand bg) + the artwork on top.
-  adaptive_icon_background: "#081522"
-  adaptive_icon_foreground: "assets/icon/app_icon.png"
+  # Android adaptive icon: navy plate matching the artwork's own background,
+  # foreground is the padded/corner-clipped copy (app_icon_fg.png) so launcher
+  # masks (circle/squircle) never clip the artwork or expose white corners.
+  adaptive_icon_background: "#132B4B"
+  adaptive_icon_foreground: "assets/icon/app_icon_fg.png"
   remove_alpha_ios: true
 
 # For information on the generic Dart part of this file, see the

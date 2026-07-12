@@ -23,7 +23,7 @@ class SampleDrawingService {
   static const String _assetPath = 'assets/samples/demo.dwg';
   // Bump the suffix if the bundled drawing is ever replaced, so existing
   // installs re-seed the new file instead of keeping the old copy.
-  static const String _seededKey = 'sample_seeded_v4';
+  static const String _seededKey = 'sample_seeded_v5';
   static const String _sampleId = 'builtin_sample_v1';
   static const String _sampleName = 'Sample Project.dwg';
 

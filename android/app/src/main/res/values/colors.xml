@@ -3,5 +3,5 @@
     <!-- Brand "blueprint" dark background, matching AppColors.bgDeep so the
          cold-start launch screen isn't a stark black/white flash. -->
     <color name="splashBg">#FF081522</color>
-	<color name="ic_launcher_background">#081522</color>
+	<color name="ic_launcher_background">#132B4B</color>
 </resources>
