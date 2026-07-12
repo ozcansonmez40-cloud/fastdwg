@@ -77,6 +77,46 @@ class DwgScene {
     return drawable > 0 ? drawable : nativeEntityCount;
   }
 
+  /// Bounding box of everything on one layer, or null if the layer is empty.
+  /// One-off linear walk over the packed arrays — used by "zoom to layer".
+  DwgBounds? layerBounds(int li) {
+    var minX = double.infinity, minY = double.infinity;
+    var maxX = double.negativeInfinity, maxY = double.negativeInfinity;
+    void pt(double x, double y) {
+      if (!x.isFinite || !y.isFinite) return;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+
+    lineBatches.forEach((key, m) {
+      if (batchLayer(key) != li) return;
+      for (var i = 0; i + 1 < m.length; i += 2) {
+        pt(m[i], m[i + 1]);
+      }
+    });
+    for (var i = 0; i < circleLayers.length; i++) {
+      if (circleLayers[i] != li) continue;
+      final r = circleCoords[i * 3 + 2];
+      pt(circleCoords[i * 3] - r, circleCoords[i * 3 + 1] - r);
+      pt(circleCoords[i * 3] + r, circleCoords[i * 3 + 1] + r);
+    }
+    for (final t in texts) {
+      if (t.layer == li) pt(t.x, t.y);
+    }
+    for (var i = 0; i < dotLayers.length; i++) {
+      if (dotLayers[i] == li) pt(dotCoords[i * 2], dotCoords[i * 2 + 1]);
+    }
+    for (final f in fills) {
+      if (f.layer != li) continue;
+      pt(f.minX, f.minY);
+      pt(f.maxX, f.maxY);
+    }
+    if (!minX.isFinite || !maxX.isFinite) return null;
+    return DwgBounds(minX: minX, minY: minY, maxX: maxX, maxY: maxY);
+  }
+
   static const int _magic = 0x35574446; // "FDW5"
 
   factory DwgScene.empty() {

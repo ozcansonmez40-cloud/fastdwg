@@ -26,7 +26,7 @@ class DwgExportService {
   ByteData? _fontData; // Roboto, loaded once and cached on the main isolate
 
   /// [paper] is 'fit' (huge page, content fills it — the original behaviour),
-  /// 'a4' or 'a3'. [scaleDenom] (e.g. 100 for 1:100) plots at TRUE scale on
+  /// or an ISO sheet 'a4'..'a0'. [scaleDenom] (e.g. 100 for 1:100) plots at TRUE scale on
   /// that paper using [insUnits] to know what one model unit is; null = fit
   /// the region to the page.
   Future<void> shareRegion({
@@ -93,7 +93,7 @@ class _PdfJob {
   final Set<int> hiddenLayers;
   final Uint8List fontBytes;
   final bool showLineWeights;
-  final String paper; // 'fit' | 'a4' | 'a3'
+  final String paper; // 'fit' | 'a4' | 'a3' | 'a2' | 'a1' | 'a0'
   final int? scaleDenom; // 100 → 1:100; null → fit region to page
   final int insUnits; // $INSUNITS code, for true-scale mm conversion
 }
@@ -138,12 +138,21 @@ Future<Uint8List> _renderVectorPdf(_PdfJob job) async {
 
   final rw = region.width;
   final rh = region.height;
-  final bool realPaper = job.paper == 'a4' || job.paper == 'a3';
+  // ISO A-series sheet sizes in mm (short × long side).
+  const paperMm = <String, (double, double)>{
+    'a4': (210.0, 297.0),
+    'a3': (297.0, 420.0),
+    'a2': (420.0, 594.0),
+    'a1': (594.0, 841.0),
+    'a0': (841.0, 1189.0),
+  };
+  final sheet = paperMm[job.paper];
+  final bool realPaper = sheet != null;
   final double pageW, pageH, margin;
-  if (realPaper) {
-    // Real sheet: A4 210×297mm / A3 297×420mm, oriented to the region.
-    final shortMm = job.paper == 'a3' ? 297.0 : 210.0;
-    final longMm = job.paper == 'a3' ? 420.0 : 297.0;
+  if (sheet != null) {
+    // Real sheet, oriented to the region.
+    final shortMm = sheet.$1;
+    final longMm = sheet.$2;
     final landscape = rw >= rh;
     pageW = (landscape ? longMm : shortMm) * _ptPerMm;
     pageH = (landscape ? shortMm : longMm) * _ptPerMm;

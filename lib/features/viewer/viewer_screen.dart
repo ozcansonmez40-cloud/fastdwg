@@ -360,7 +360,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
                     Text('${tr('Paper', 'Kağıt')}: ',
                         style: const TextStyle(
                             color: AppColors.textMuted, fontSize: 13)),
-                    for (final p in const ['fit', 'a4', 'a3'])
+                    for (final p in const ['fit', 'a4', 'a3', 'a2', 'a1', 'a0'])
                       _SettingsChoice(
                         label: p == 'fit' ? tr('Fit', 'Serbest') : p.toUpperCase(),
                         selected: _exportPaper == p,
@@ -685,6 +685,26 @@ class _ViewerScreenState extends State<ViewerScreen> {
     setState(() => _measureUndoToken++);
   }
 
+  /// Katman panelindeki "konuma git": o katmandaki geometrinin kapladığı
+  /// bölgeye odaklanır (gizliyse önce görünür yapar).
+  void _zoomToLayer(int layerIndex) {
+    final scene = _renderState.scene;
+    if (scene == null) return;
+    final b = scene.layerBounds(layerIndex);
+    if (b == null) return;
+    // focusSpan görünür model YÜKSEKLİĞİ olduğundan, yatay-geniş katmanlarda
+    // genişliği de ekran oranıyla yüksekliğe çevirip büyüğünü alıyoruz.
+    final size = MediaQuery.of(context).size;
+    final aspect = size.width > 0 ? size.height / size.width : 1.0;
+    final span = (b.height > b.width * aspect ? b.height : b.width * aspect);
+    setState(() {
+      _hiddenLayers.remove(layerIndex);
+      _focusTarget = Offset((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2);
+      _focusSpan = span * 1.15; // kenarlarda az pay bırak
+      _focusToken++;
+    });
+  }
+
   void _showLayerPanel() {
     final scene = _renderState.scene;
     if (scene == null) return;
@@ -704,6 +724,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
       builder: (sheetContext) => _LayerPanelSheet(
         scene: scene,
         initialHidden: _hiddenLayers,
+        onZoomLayer: _zoomToLayer,
         // Mirror the sheet's hidden-set into the viewer so the drawing updates
         // live behind the panel.
         onChanged: (hidden) => setState(() {
@@ -1756,11 +1777,15 @@ class _LayerPanelSheet extends StatefulWidget {
     required this.scene,
     required this.initialHidden,
     required this.onChanged,
+    this.onZoomLayer,
   });
 
   final DwgScene scene;
   final Set<int> initialHidden;
   final ValueChanged<Set<int>> onChanged;
+
+  /// "Konuma git": paneli kapatıp çizimi bu katmanın bölgesine odaklar.
+  final ValueChanged<int>? onZoomLayer;
 
   @override
   State<_LayerPanelSheet> createState() => _LayerPanelSheetState();
@@ -1911,6 +1936,16 @@ class _LayerPanelSheetState extends State<_LayerPanelSheet> {
                                 borderRadius: BorderRadius.circular(4),
                                 border: Border.all(color: AppColors.border),
                               ),
+                            ),
+                            IconButton(
+                              tooltip: tr('Go to layer', 'Konuma git'),
+                              visualDensity: VisualDensity.compact,
+                              icon: const Icon(Icons.my_location, size: 19),
+                              color: AppColors.textMuted,
+                              onPressed: () {
+                                widget.onZoomLayer?.call(i);
+                                Navigator.of(context).pop();
+                              },
                             ),
                             IconButton(
                               tooltip: tr('Isolate', 'Sadece bu'),
