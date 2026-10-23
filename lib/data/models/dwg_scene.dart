@@ -65,8 +65,13 @@ class DwgScene {
   /// match the drawing's own dimensions instead of assuming millimetres.
   final int insUnits;
 
-  static int batchLayer(int key) => key >> 24;
+  static int batchLayer(int key) => (key >> 24) & 0xFFFF;
   static int batchColor(int key) => key & 0xFFFFFF;
+
+  /// True when the batch holds hatch-pattern lines (flag bit set by the native
+  /// parser in the color's spare top byte). Hatches always draw/plot with a
+  /// thin pen — a layer lineweight on dense hatching turns it into a black blob.
+  static bool batchIsHatch(int key) => (key >> 40) != 0;
 
   int get circleCount => circleColors.length;
 
@@ -221,9 +226,10 @@ class DwgScene {
     final groupCounts = <int, int>{};
     var scan = o;
     for (var i = 0; i < lineCount; i++) {
-      final c = bd.getUint32(scan + 16, Endian.little) & 0xFFFFFF;
+      final raw = bd.getUint32(scan + 16, Endian.little);
       final l = bd.getUint16(scan + 20, Endian.little);
-      final key = (l << 24) | c;
+      // Hatch flag (color top byte) rides above layer+rgb in the batch key.
+      final key = ((raw >> 24) << 40) | (l << 24) | (raw & 0xFFFFFF);
       groupCounts[key] = (groupCounts[key] ?? 0) + 1;
       scan += lineStride;
     }
@@ -238,10 +244,10 @@ class DwgScene {
       final y1 = bd.getFloat32(o + 4, Endian.little);
       final x2 = bd.getFloat32(o + 8, Endian.little);
       final y2 = bd.getFloat32(o + 12, Endian.little);
-      final c = bd.getUint32(o + 16, Endian.little) & 0xFFFFFF;
+      final raw = bd.getUint32(o + 16, Endian.little);
       final l = bd.getUint16(o + 20, Endian.little);
       o += lineStride;
-      final key = (l << 24) | c;
+      final key = ((raw >> 24) << 40) | (l << 24) | (raw & 0xFFFFFF);
       final b = batches[key]!;
       var k = cursor[key]!;
       b[k++] = x1;

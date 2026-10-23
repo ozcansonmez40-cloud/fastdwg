@@ -1,20 +1,28 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:provider/provider.dart';
 
+import 'package:image_picker/image_picker.dart';
+
 import '../../core/l10n/l10n.dart';
 import '../../data/models/dwg_scene.dart';
+import '../../data/models/photo_note.dart';
 import '../../data/models/recent_file.dart';
 import '../../data/repositories/annotations_repository.dart';
 import '../../data/repositories/camera_repository.dart';
+import '../../data/repositories/photos_repository.dart';
 import '../../features/app/app_controller.dart';
 import '../../services/dwg_export_service.dart';
+import '../../services/dwg_preview_service.dart';
 import '../../services/dwg_renderer_service.dart';
 import '../../shared/widgets/blueprint_background.dart';
+import 'photo_notes_sheet.dart';
 import '../../shared/widgets/dwg_viewport.dart';
 import '../../shared/widgets/walking_worker.dart';
 import '../../shared/widgets/technical_chip.dart';
@@ -69,6 +77,10 @@ class _ViewerScreenState extends State<ViewerScreen> {
   // Coarse first-open progress ('decode' → native parser, 'scene' → loading
   // the packed scene) shown by the loading view.
   String _loadStage = 'decode';
+
+  // Preview embedded in the DWG header, shown on the loading screen the
+  // moment it's read (milliseconds) while the real parse runs in background.
+  Uint8List? _previewBytes;
   bool _exporting = false; // rendering/sharing in progress
   String _exportPaper = 'fit'; // 'fit' | 'a4' | 'a3'
   int? _exportScale; // 100 → 1:100 true scale; null → fit to page
@@ -108,6 +120,14 @@ class _ViewerScreenState extends State<ViewerScreen> {
   // Dosya bazında son bakılan bölge — kapatıp açınca kaldığın yerden devam.
   final CameraRepository _cameraRepo = CameraRepository();
 
+  // Çizime iğnelenen foto/notlar. Foto modunda dokunulan model noktasına
+  // kamera/galeri/not seçtirilir; iğneye dokununca içeriği açılır.
+  final PhotosRepository _photosRepo = PhotosRepository();
+  final ImagePicker _photoPicker = ImagePicker();
+  List<PhotoNote> _photoNotes = const [];
+  bool _photoMode = false;
+  bool _photoBusy = false; // kamera/galeri akışı sürüyor
+
   static const List<String> _units = ['u', 'mm', 'cm', 'm', 'in', 'ft'];
 
   int get _effectiveInsUnits => _modelUnit;
@@ -133,7 +153,22 @@ class _ViewerScreenState extends State<ViewerScreen> {
     _drawingMono = saved.viewerMonochrome;
     _lineWeights = saved.viewerLineWeights;
     _prepareRenderer();
+    _loadPreview();
     _loadAnnotations();
+    _loadPhotoNotes();
+  }
+
+  Future<void> _loadPhotoNotes() async {
+    final notes = await _photosRepo.load(widget.file.id);
+    if (!mounted || notes.isEmpty) return;
+    setState(() => _photoNotes = notes);
+  }
+
+  Future<void> _loadPreview() async {
+    final bytes = await DwgPreviewService.extract(widget.file.uri);
+    if (!mounted || bytes == null) return;
+    if (_renderState.scene != null) return; // drawing already on screen
+    setState(() => _previewBytes = bytes);
   }
 
   Future<void> _loadAnnotations() async {
@@ -277,6 +312,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
     setState(() {
       _measureMode = !_measureMode;
       if (_measureMode) _drawMode = false; // mutually exclusive
+      if (_measureMode) _photoMode = false;
       _toolArmed = _measureMode; // arm the sub-tool when the panel opens
       _measureResult = null;
     });
@@ -287,6 +323,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
     setState(() {
       _drawMode = !_drawMode;
       if (_drawMode) _measureMode = false; // mutually exclusive
+      if (_drawMode) _photoMode = false;
       _toolArmed = _drawMode;
       _measureResult = null;
     });
@@ -311,6 +348,349 @@ class _ViewerScreenState extends State<ViewerScreen> {
     });
   }
 
+  /// Alt çubuktaki "Foto" düğmesi: foto modunu açıp kapatır. Mod açıkken
+  /// çizimde dokunulan yere iğne bırakılır (kamera/galeri/not seçtirilir).
+  void _onPhotosTap() {
+    if (_renderState.scene == null) return;
+    setState(() {
+      _photoMode = !_photoMode;
+      if (_photoMode) {
+        _measureMode = false;
+        _drawMode = false;
+        _exportSelectMode = false;
+        _toolArmed = false;
+      }
+    });
+  }
+
+  Future<void> _savePhotoNotes() =>
+      _photosRepo.save(widget.file.id, _photoNotes);
+
+  /// Foto modunda çizime dokunuldu: o model noktasına ne iğneleneceğini sor.
+  Future<void> _onPhotoPlace(Offset model) async {
+    if (_photoBusy) return;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppColors.bgDeep,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined,
+                  color: AppColors.accentSecondary),
+              title: Text(tr('Take photo', 'Fotoğraf çek'),
+                  style: const TextStyle(color: AppColors.textPrimary)),
+              onTap: () => Navigator.of(sheetContext).pop('camera'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined,
+                  color: AppColors.accentSecondary),
+              title: Text(tr('Pick from gallery', 'Galeriden seç'),
+                  style: const TextStyle(color: AppColors.textPrimary)),
+              onTap: () => Navigator.of(sheetContext).pop('gallery'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.sticky_note_2_outlined,
+                  color: AppColors.accentSecondary),
+              title: Text(tr('Write note', 'Not yaz'),
+                  style: const TextStyle(color: AppColors.textPrimary)),
+              onTap: () => Navigator.of(sheetContext).pop('note'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !mounted) return;
+
+    if (choice == 'note') {
+      final text = await showPhotoTextDialog(
+        context,
+        title: tr('New note', 'Yeni not'),
+        confirm: tr('Add', 'Ekle'),
+      );
+      if (text == null || text.trim().isEmpty || !mounted) return;
+      setState(() {
+        _photoNotes = [
+          ..._photoNotes,
+          PhotoNote(
+            id: DateTime.now().microsecondsSinceEpoch.toString(),
+            x: model.dx,
+            y: model.dy,
+            path: '',
+            createdAt: DateTime.now(),
+            caption: text.trim(),
+          ),
+        ];
+      });
+      await _savePhotoNotes();
+      return;
+    }
+
+    setState(() => _photoBusy = true);
+    try {
+      final picked = await _photoPicker.pickImage(
+        source:
+            choice == 'camera' ? ImageSource.camera : ImageSource.gallery,
+        maxWidth: 2560,
+        imageQuality: 88,
+      );
+      if (picked == null || !mounted) return;
+      final stored = await _photosRepo.importImage(widget.file.id, picked.path);
+      if (stored == null || !mounted) return;
+      setState(() {
+        _photoNotes = [
+          ..._photoNotes,
+          PhotoNote(
+            id: DateTime.now().microsecondsSinceEpoch.toString(),
+            x: model.dx,
+            y: model.dy,
+            path: stored,
+            createdAt: DateTime.now(),
+          ),
+        ];
+      });
+      await _savePhotoNotes();
+    } finally {
+      if (mounted) setState(() => _photoBusy = false);
+    }
+  }
+
+  /// Çizimdeki iğne(ler)e dokunuldu. Tek iğne doğrudan açılır; üst üste
+  /// duran birden çok iğnede hangisinin (foto/not) açılacağı sorulur.
+  Future<void> _onPhotoMarkerTap(List<String> ids) async {
+    final hits = [
+      for (final id in ids)
+        for (final n in _photoNotes)
+          if (n.id == id) n,
+    ];
+    if (hits.isEmpty) return;
+    var note = hits.first;
+    if (hits.length > 1) {
+      final picked = await showModalBottomSheet<PhotoNote>(
+        context: context,
+        backgroundColor: AppColors.bgDeep,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+        ),
+        builder: (sheetContext) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final n in hits)
+                ListTile(
+                  leading: n.path.isNotEmpty
+                      ? ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: Image.file(File(n.path),
+                              width: 40, height: 40, fit: BoxFit.cover),
+                        )
+                      : const Icon(Icons.sticky_note_2_outlined,
+                          color: AppColors.accentSecondary),
+                  title: Text(
+                    n.path.isNotEmpty
+                        ? (n.caption.isNotEmpty
+                            ? n.caption
+                            : tr('Photo', 'Fotoğraf'))
+                        : (n.caption.isNotEmpty
+                            ? n.caption
+                            : tr('Note', 'Not')),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: AppColors.textPrimary, fontSize: 14),
+                  ),
+                  onTap: () => Navigator.of(sheetContext).pop(n),
+                ),
+            ],
+          ),
+        ),
+      );
+      if (picked == null || !mounted) return;
+      note = picked;
+    }
+    final n = note;
+    if (n.path.isNotEmpty) {
+      Navigator.of(context).push(MaterialPageRoute<void>(
+        builder: (_) => PhotoViewerPage(
+          note: n,
+          onCaptionTap: () => _editPhotoNote(n),
+          onDeleteTap: () => _deletePhotoNote(n),
+        ),
+      ));
+    } else {
+      await _openTextNote(n);
+    }
+  }
+
+  /// İğneye uzun basma: içine girmeden hızlı silme. Üst üste iğnelerde önce
+  /// hangisinin silineceği seçtirilir; onay diyaloğu her durumda çıkar.
+  Future<void> _onPhotoMarkerLongPress(List<String> ids) async {
+    final hits = [
+      for (final id in ids)
+        for (final n in _photoNotes)
+          if (n.id == id) n,
+    ];
+    if (hits.isEmpty) return;
+    var note = hits.first;
+    if (hits.length > 1) {
+      final picked = await showModalBottomSheet<PhotoNote>(
+        context: context,
+        backgroundColor: AppColors.bgDeep,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+        ),
+        builder: (sheetContext) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 14, 18, 4),
+                child: Text(
+                  tr('Delete which one?', 'Hangisi silinsin?'),
+                  style: const TextStyle(
+                      color: AppColors.textMuted, fontSize: 13),
+                ),
+              ),
+              for (final n in hits)
+                ListTile(
+                  leading: n.path.isNotEmpty
+                      ? ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: Image.file(File(n.path),
+                              width: 40, height: 40, fit: BoxFit.cover),
+                        )
+                      : const Icon(Icons.sticky_note_2_outlined,
+                          color: AppColors.accentSecondary),
+                  title: Text(
+                    n.caption.isNotEmpty
+                        ? n.caption
+                        : (n.path.isNotEmpty
+                            ? tr('Photo', 'Fotoğraf')
+                            : tr('Note', 'Not')),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: AppColors.textPrimary, fontSize: 14),
+                  ),
+                  onTap: () => Navigator.of(sheetContext).pop(n),
+                ),
+            ],
+          ),
+        ),
+      );
+      if (picked == null || !mounted) return;
+      note = picked;
+    }
+    await _deletePhotoNote(note);
+  }
+
+  Future<void> _editPhotoNote(PhotoNote note) async {
+    final text = await showPhotoTextDialog(
+      context,
+      title: note.path.isNotEmpty
+          ? tr('Photo caption', 'Fotoğraf açıklaması')
+          : tr('Edit note', 'Notu düzenle'),
+      confirm: tr('Save', 'Kaydet'),
+      initial: note.caption,
+    );
+    if (text == null || !mounted) return;
+    setState(() {
+      _photoNotes = [
+        for (final n in _photoNotes)
+          if (n.id == note.id) n.copyWith(caption: text.trim()) else n,
+      ];
+    });
+    await _savePhotoNotes();
+  }
+
+  Future<void> _deletePhotoNote(PhotoNote note) async {
+    final ok =
+        await confirmDeletePhotoNote(context, isPhoto: note.path.isNotEmpty);
+    if (!ok || !mounted) return;
+    if (note.path.isNotEmpty) await _photosRepo.deleteImageFile(note.path);
+    setState(() {
+      _photoNotes = [for (final n in _photoNotes) if (n.id != note.id) n];
+    });
+    await _savePhotoNotes();
+  }
+
+  /// Not iğnesi: metni gösteren küçük diyalog (düzenle / sil / kapat).
+  Future<void> _openTextNote(PhotoNote note) async {
+    final action = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.bgDeep,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(
+          tr('Note', 'Not'),
+          style: const TextStyle(color: AppColors.textPrimary, fontSize: 18),
+        ),
+        content: Text(
+          note.caption,
+          style: const TextStyle(
+              color: AppColors.textSecondary, fontSize: 14, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop('delete'),
+            child: Text(tr('Delete', 'Sil'),
+                style: const TextStyle(color: Colors.redAccent)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop('edit'),
+            child: Text(tr('Edit', 'Düzenle'),
+                style: const TextStyle(color: AppColors.accentPrimary)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text(tr('Close', 'Kapat'),
+                style: const TextStyle(color: AppColors.textMuted)),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'edit') await _editPhotoNote(note);
+    if (action == 'delete') await _deletePhotoNote(note);
+  }
+
+  /// Foto modu şeridindeki liste düğmesi: tüm foto/notları listeleyen sayfa.
+  void _showPhotoNotes() {
+    _freezeSignal.value++;
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.bgDeep,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (sheetContext) => PhotoNotesSheet(
+        fileId: widget.file.id,
+        notes: _photoNotes,
+        onChanged: (notes) {
+          if (mounted) setState(() => _photoNotes = notes);
+        },
+        onLocateTap: (note) {
+          // İğneye odaklan: arama sonucuna gitmekle aynı mekanizma.
+          final scene = _renderState.scene;
+          if (scene == null) return;
+          final b = scene.drawableBounds;
+          final span = ((b.maxY - b.minY).abs()) / 6;
+          setState(() {
+            _photoMode = false;
+            _focusTarget = Offset(note.x, note.y);
+            _focusSpan = span > 0 ? span : 100;
+            _focusToken++;
+          });
+        },
+      ),
+    );
+  }
+
   void _onExportTap() {
     if (_renderState.scene == null || _exporting) return;
     // Second tap while select-a-region is armed = turn the mode OFF (the
@@ -323,6 +703,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
     setState(() {
       _measureMode = false;
       _drawMode = false;
+      _photoMode = false;
     });
     _freezeSignal.value++;
     showModalBottomSheet<void>(
@@ -775,15 +1156,19 @@ class _ViewerScreenState extends State<ViewerScreen> {
                 : EdgeInsets.zero,
             child: _renderState.scene == null
                 ? (_renderState.status == DwgRenderStatus.error ||
-                        _renderState.status == DwgRenderStatus.unsupported
+                        _renderState.status == DwgRenderStatus.unsupported ||
+                        _renderState.status == DwgRenderStatus.stuck
                     ? _ViewerErrorView(
                         fileName: widget.file.name,
                         message: _renderState.message,
                         filePath: widget.file.uri,
+                        stuck: _renderState.status == DwgRenderStatus.stuck,
                       )
                     : _ViewerLoadingView(
                         fileName: widget.file.name,
                         stage: _loadStage,
+                        previewBytes: _previewBytes,
+                        sizeBytes: widget.file.fileSizeBytes,
                       ))
                 : Stack(
                     children: [
@@ -796,6 +1181,19 @@ class _ViewerScreenState extends State<ViewerScreen> {
                         onDrawTap: _onDrawTap,
                         onSettingsTap: _showSettings,
                         onExportTap: _onExportTap,
+                        onPhotosTap: _onPhotosTap,
+                        photoMode: _photoMode,
+                        photos: [
+                          for (final n in _photoNotes)
+                            PhotoMarker(n.id, Offset(n.x, n.y),
+                                isPhoto: n.path.isNotEmpty),
+                        ],
+                        onPhotoPlace: _onPhotoPlace,
+                        onPhotoMarkerTap: _onPhotoMarkerTap,
+                        onPhotoMarkerLongPress: _onPhotoMarkerLongPress,
+                        onPhotoListTap: _showPhotoNotes,
+                        onCancelPhotoMode: () =>
+                            setState(() => _photoMode = false),
                         onSearchTap: _toggleSearch,
                         exportSelectMode: _exportSelectMode,
                         exporting: _exporting,
@@ -859,36 +1257,73 @@ class _ViewerScreenState extends State<ViewerScreen> {
   }
 }
 
-/// Shown while the native parser decodes the file (can take a few seconds on a
-/// large drawing).
+/// Shown while the native parser decodes the file (can take a while on a
+/// large drawing): the DWG's own embedded thumbnail (read from the header in
+/// milliseconds), the walking worker, a moving percentage bar and a one-line
+/// "first open is slow, next ones are instant" note.
 class _ViewerLoadingView extends StatefulWidget {
-  const _ViewerLoadingView({required this.fileName, this.stage = 'decode'});
+  const _ViewerLoadingView({
+    required this.fileName,
+    this.stage = 'decode',
+    this.previewBytes,
+    this.sizeBytes,
+  });
 
   final String fileName;
   final String stage; // 'decode' | 'scene'
+  final Uint8List? previewBytes; // embedded DWG thumbnail, if any
+  final int? sizeBytes; // file size → decode-time estimate for the bar
 
   @override
   State<_ViewerLoadingView> createState() => _ViewerLoadingViewState();
 }
 
 class _ViewerLoadingViewState extends State<_ViewerLoadingView> {
-  // After a few seconds of decoding, reassure the user that a long first open
-  // is normal (and one-time): without this, big files look frozen and get
-  // force-closed mid-parse.
-  Timer? _hintTimer;
-  bool _showSlowHint = false;
+  // The native parser reports no fine-grained progress, so the bar runs on a
+  // size-calibrated curve: it approaches (but never reaches) the stage cap, so
+  // it always moves — a frozen or indeterminate bar reads as a hung app.
+  Timer? _tick;
+  final Stopwatch _sw = Stopwatch()..start();
+  double _progress = 0;
+  double? _sceneAtMs; // when the 'scene' stage began
+
+  // A parse can wedge in native code (the queue then jams until the process
+  // dies). If the wait blows far past the size-based estimate, surface a
+  // restart option — a legit slow parse just ignores the button.
+  bool _showRestart = false;
+
+  /// Estimated decode time from the file size (~0.7s/MB on device, floor 2.5s).
+  double get _estMs {
+    final mb = (widget.sizeBytes ?? (4 << 20)) / (1024 * 1024);
+    return (mb * 700.0).clamp(2500.0, 90000.0);
+  }
 
   @override
   void initState() {
     super.initState();
-    _hintTimer = Timer(const Duration(seconds: 4), () {
-      if (mounted) setState(() => _showSlowHint = true);
-    });
+    _tick = Timer.periodic(const Duration(milliseconds: 120), (_) => _onTick());
+  }
+
+  void _onTick() {
+    if (!mounted) return;
+    final t = _sw.elapsedMilliseconds.toDouble();
+    double p;
+    if (widget.stage == 'scene') {
+      // Native work done — the packed scene is loading. Run out the last 10%.
+      _sceneAtMs ??= t;
+      p = 0.90 + 0.08 * (1 - math.exp(-(t - _sceneAtMs!) / 1200.0));
+    } else {
+      p = 0.88 * (1 - math.exp(-t / _estMs * 1.7));
+    }
+    if (p > _progress) setState(() => _progress = p);
+    if (!_showRestart && t > math.max(_estMs * 4, 120000.0)) {
+      setState(() => _showRestart = true);
+    }
   }
 
   @override
   void dispose() {
-    _hintTimer?.cancel();
+    _tick?.cancel();
     super.dispose();
   }
 
@@ -897,10 +1332,31 @@ class _ViewerLoadingViewState extends State<_ViewerLoadingView> {
     final stageText = widget.stage == 'scene'
         ? tr('Preparing the view…', 'Görünüm hazırlanıyor…')
         : tr('Decoding the drawing…', 'Çizim çözülüyor…');
+    final preview = widget.previewBytes;
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (preview != null) ...[
+            // The drawing's own saved thumbnail: instant real content while
+            // the parse runs, so the wait never feels blind.
+            Container(
+              constraints: const BoxConstraints(maxWidth: 250, maxHeight: 170),
+              clipBehavior: Clip.antiAlias,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.border),
+              ),
+              child: Image.memory(
+                preview,
+                fit: BoxFit.contain,
+                gaplessPlayback: true,
+                errorBuilder: (_, e, s) => const SizedBox.shrink(),
+              ),
+            ),
+            const SizedBox(height: 18),
+          ],
           const WalkingWorker(size: 104),
           const SizedBox(height: 14),
           Text(
@@ -911,7 +1367,30 @@ class _ViewerLoadingViewState extends State<_ViewerLoadingView> {
               fontWeight: FontWeight.w600,
             ),
           ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: 250,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: _progress,
+                minHeight: 6,
+                backgroundColor: AppColors.surface1,
+                valueColor:
+                    const AlwaysStoppedAnimation(AppColors.accentPrimary),
+              ),
+            ),
+          ),
           const SizedBox(height: 6),
+          Text(
+            '%${(_progress * 100).round()}',
+            style: const TextStyle(
+              color: AppColors.accentPrimary,
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 10),
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 280),
             child: Text(
@@ -922,26 +1401,44 @@ class _ViewerLoadingViewState extends State<_ViewerLoadingView> {
               style: const TextStyle(color: AppColors.textMuted, fontSize: 13),
             ),
           ),
-          if (_showSlowHint) ...[
+          if (_showRestart) ...[
             const SizedBox(height: 14),
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 300),
               child: Text(
                 tr(
-                  'Large drawings can take 15-20 seconds the first time. '
-                  'The next open will be instant.',
-                  'Büyük çizimler ilk açılışta 15-20 saniye sürebilir. '
-                  'Bir sonraki açılış anlık olacak.',
+                  'This is taking much longer than expected. Very large files can be slow — but if it looks stuck, restart the app.',
+                  'Bu beklenenden çok uzun sürüyor. Çok büyük dosyalar yavaş açılabilir — ama takıldıysa uygulamayı yeniden başlat.',
                 ),
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                  color: AppColors.textMuted,
-                  fontSize: 12,
-                  height: 1.4,
+                  color: AppColors.textSecondary,
+                  fontSize: 12.5,
+                  height: 1.35,
                 ),
               ),
             ),
+            const SizedBox(height: 6),
+            TextButton.icon(
+              onPressed: DwgRendererService.restartApp,
+              icon: const Icon(Icons.restart_alt, size: 18),
+              label: Text(tr('Restart the app', 'Uygulamayı yeniden başlat')),
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.accentSecondary,
+              ),
+            ),
           ],
+          const SizedBox(height: 12),
+          Text(
+            tr('First open takes a while — the next ones are instant.',
+                'İlk açılış biraz sürer, sonraki açılışlar anında.'),
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: AppColors.textMuted,
+              fontSize: 12,
+              height: 1.4,
+            ),
+          ),
         ],
       ),
     );
@@ -951,10 +1448,19 @@ class _ViewerLoadingViewState extends State<_ViewerLoadingView> {
 /// Shown when the file is corrupt or its DWG version isn't supported — a clean
 /// message instead of a crash or a blank screen.
 class _ViewerErrorView extends StatelessWidget {
-  const _ViewerErrorView({required this.fileName, this.message, this.filePath});
+  const _ViewerErrorView({
+    required this.fileName,
+    this.message,
+    this.filePath,
+    this.stuck = false,
+  });
 
   final String fileName;
   final String? message;
+
+  /// True when the native parse queue is jammed behind a wedged parse: the
+  /// file itself is fine, only an app restart clears the jam.
+  final bool stuck;
 
   /// Local path of the failing file — offered for sharing so problem files
   /// can reach the developer for analysis.
@@ -979,13 +1485,15 @@ class _ViewerErrorView extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error_outline,
+            Icon(stuck ? Icons.restart_alt : Icons.error_outline,
                 size: 56, color: AppColors.accentSecondary),
             const SizedBox(height: 16),
-            const Text(
-              "This drawing couldn't be opened",
+            Text(
+              stuck
+                  ? tr('The app needs a restart', 'Uygulamayı yeniden başlatmak gerekiyor')
+                  : tr("This drawing couldn't be opened", 'Bu çizim açılamadı'),
               textAlign: TextAlign.center,
-              style: TextStyle(
+              style: const TextStyle(
                 color: AppColors.textPrimary,
                 fontSize: 17,
                 fontWeight: FontWeight.w700,
@@ -993,8 +1501,12 @@ class _ViewerErrorView extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              message ??
-                  tr('The file may be corrupted or its DWG version is not supported.', 'Dosya bozuk olabilir veya DWG sürümü desteklenmiyor.'),
+              stuck
+                  ? tr(
+                      'A previous drawing got stuck while opening, so new drawings cannot start. Restarting the app fixes it — your files are safe.',
+                      'Önceki bir çizim açılırken takılı kaldı, bu yüzden yeni çizimler başlatılamıyor. Uygulamayı yeniden başlatınca düzelir — dosyaların güvende.')
+                  : message ??
+                      tr('The file may be corrupted or its DWG version is not supported.', 'Dosya bozuk olabilir veya DWG sürümü desteklenmiyor.'),
               textAlign: TextAlign.center,
               style: const TextStyle(
                 color: AppColors.textSecondary,
@@ -1003,6 +1515,17 @@ class _ViewerErrorView extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 24),
+            if (stuck) ...[
+              FilledButton.icon(
+                onPressed: DwgRendererService.restartApp,
+                icon: const Icon(Icons.restart_alt, size: 18),
+                label: Text(tr('Restart the app', 'Uygulamayı yeniden başlat')),
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.accentPrimary,
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
             OutlinedButton.icon(
               onPressed: () => Navigator.of(context).maybePop(),
               icon: const Icon(Icons.arrow_back, size: 18),
@@ -1012,7 +1535,7 @@ class _ViewerErrorView extends StatelessWidget {
                 side: const BorderSide(color: AppColors.accentPrimary),
               ),
             ),
-            if (filePath != null) ...[
+            if (filePath != null && !stuck) ...[
               const SizedBox(height: 10),
               TextButton.icon(
                 onPressed: _shareFile,
@@ -1056,6 +1579,14 @@ class _FullScreenDrawing extends StatelessWidget {
     this.onDrawTap,
     this.onSettingsTap,
     this.onExportTap,
+    this.onPhotosTap,
+    this.photoMode = false,
+    this.photos = const [],
+    this.onPhotoPlace,
+    this.onPhotoMarkerTap,
+    this.onPhotoMarkerLongPress,
+    this.onPhotoListTap,
+    this.onCancelPhotoMode,
     this.onSearchTap,
     this.exportSelectMode = false,
     this.exporting = false,
@@ -1100,6 +1631,14 @@ class _FullScreenDrawing extends StatelessWidget {
   final VoidCallback? onDrawTap;
   final VoidCallback? onSettingsTap;
   final VoidCallback? onExportTap;
+  final VoidCallback? onPhotosTap;
+  final bool photoMode;
+  final List<PhotoMarker> photos;
+  final ValueChanged<Offset>? onPhotoPlace;
+  final ValueChanged<List<String>>? onPhotoMarkerTap;
+  final ValueChanged<List<String>>? onPhotoMarkerLongPress;
+  final VoidCallback? onPhotoListTap;
+  final VoidCallback? onCancelPhotoMode;
   final VoidCallback? onSearchTap;
   final bool exportSelectMode;
   final bool exporting;
@@ -1169,6 +1708,11 @@ class _FullScreenDrawing extends StatelessWidget {
             exportSelectMode: exportSelectMode,
             onExportRectSelected: onExportRectSelected,
             onVisibleBoundsChanged: onVisibleBoundsChanged,
+            photos: photos,
+            photoMode: photoMode,
+            onPhotoPlace: onPhotoPlace,
+            onPhotoTap: onPhotoMarkerTap,
+            onPhotoLongPress: onPhotoMarkerLongPress,
             freezeSignal: freezeSignal,
           ),
         ),
@@ -1213,7 +1757,12 @@ class _FullScreenDrawing extends StatelessWidget {
                 ),
               if (exportSelectMode)
                 _ExportSelectBar(onCancel: onCancelExportSelect),
-              if (measureMode || drawMode || exportSelectMode)
+              if (photoMode)
+                _PhotoModeBar(
+                  onListTap: onPhotoListTap,
+                  onCancel: onCancelPhotoMode,
+                ),
+              if (measureMode || drawMode || exportSelectMode || photoMode)
                 const SizedBox(height: 8),
               _ViewerBottomBar(
                 onMeasureTap: onMeasureTap,
@@ -1221,17 +1770,23 @@ class _FullScreenDrawing extends StatelessWidget {
                 onDrawTap: onDrawTap,
                 onSettingsTap: onSettingsTap,
                 onExportTap: onExportTap,
+                onPhotosTap: onPhotosTap,
                 measureActive: measureMode,
                 drawActive: drawMode,
                 exportActive: exportSelectMode,
+                photosActive: photoMode,
               ),
             ],
           ),
         ),
-        // Zoom-to-extents: fit the whole drawing back into view.
+        // Zoom-to-extents: fit the whole drawing back into view. Slides up
+        // when a mode strip (measure/draw/export/photo) sits above the bottom
+        // bar so it never covers the strip's buttons.
         Positioned(
           right: 12,
-          bottom: 92,
+          bottom: (measureMode || drawMode || exportSelectMode || photoMode)
+              ? 156
+              : 92,
           child: SafeArea(
             child: Material(
               color: AppColors.bgDeep.withValues(alpha: 0.92),
@@ -1987,9 +2542,11 @@ class _ViewerBottomBar extends StatelessWidget {
     this.onDrawTap,
     this.onSettingsTap,
     this.onExportTap,
+    this.onPhotosTap,
     this.measureActive = false,
     this.drawActive = false,
     this.exportActive = false,
+    this.photosActive = false,
   });
 
   final VoidCallback? onMeasureTap;
@@ -1997,9 +2554,11 @@ class _ViewerBottomBar extends StatelessWidget {
   final VoidCallback? onDrawTap;
   final VoidCallback? onSettingsTap;
   final VoidCallback? onExportTap;
+  final VoidCallback? onPhotosTap;
   final bool measureActive;
   final bool drawActive;
   final bool exportActive;
+  final bool photosActive;
 
   @override
   Widget build(BuildContext context) {
@@ -2038,6 +2597,12 @@ class _ViewerBottomBar extends StatelessWidget {
                 label: tr('Export', 'Dışa aktar'),
                 onTap: onExportTap,
                 active: exportActive,
+              ),
+              _BottomAction(
+                icon: Icons.photo_camera_outlined,
+                label: tr('Photos', 'Foto'),
+                onTap: onPhotosTap,
+                active: photosActive,
               ),
               _BottomAction(
                 icon: Icons.tune,
@@ -2134,6 +2699,59 @@ class _ExportSelectBar extends StatelessWidget {
               onPressed: onCancel,
               style: TextButton.styleFrom(foregroundColor: AppColors.textSecondary),
               child: Text(tr('Cancel', 'Vazgeç')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Instruction strip shown in photo mode: tap the drawing to pin a photo/note
+/// there, open the list of existing ones, or leave the mode.
+class _PhotoModeBar extends StatelessWidget {
+  const _PhotoModeBar({this.onListTap, this.onCancel});
+
+  final VoidCallback? onListTap;
+  final VoidCallback? onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: AppColors.bgDeep.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(AppRadii.input),
+        border: Border.all(color: AppColors.accentPrimary),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+        child: Row(
+          children: [
+            const Icon(Icons.push_pin_outlined,
+                color: AppColors.accentPrimary, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                tr('Tap the drawing to pin a photo or note',
+                    'Foto/not iğnelemek için çizime dokun'),
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            IconButton(
+              onPressed: onListTap,
+              tooltip: tr('List', 'Liste'),
+              icon: const Icon(Icons.list_alt,
+                  color: AppColors.accentSecondary, size: 20),
+            ),
+            TextButton(
+              onPressed: onCancel,
+              style:
+                  TextButton.styleFrom(foregroundColor: AppColors.textSecondary),
+              child: Text(tr('Done', 'Bitti')),
             ),
           ],
         ),

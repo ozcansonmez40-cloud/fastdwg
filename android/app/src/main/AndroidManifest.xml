@@ -80,7 +80,32 @@
             <data android:mimeType="application/x-dxf" />
             <data android:mimeType="application/octet-stream" />
         </intent-filter>
+        <!-- WhatsApp (and some file managers) share documents typed as * / *
+             rather than a concrete CAD mime; without this catch-all filter
+             FastDWG never appears in their share sheets, and share is the ONLY
+             way out of WhatsApp for .dwg since its tap-to-open refuses unknown
+             extensions before asking the system. Non-CAD payloads shared here
+             are rejected by the app's own stream validation. -->
+        <intent-filter>
+            <action android:name="android.intent.action.SEND" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data android:mimeType="*/*" />
+        </intent-filter>
     </activity>
+        <!-- Serves outgoing drawing shares from cache/fastdwg_share. Shares go
+             through our own Kotlin path (not share_plus) because messaging
+             apps must receive DWGs as application/octet-stream: WhatsApp only
+             re-opens documents whose type it recognises, and share_plus
+             overrides the declared mime with a CAD one WhatsApp refuses. -->
+        <provider
+            android:name=".ShareFileProvider"
+            android:authorities="${applicationId}.shareprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/fastdwg_share_paths" />
+        </provider>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

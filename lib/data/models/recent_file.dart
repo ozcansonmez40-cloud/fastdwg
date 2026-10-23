@@ -22,6 +22,8 @@ class RecentFile {
   final bool isPinned;
 
   RecentFile copyWith({
+    String? name,
+    String? uri,
     DateTime? lastOpenedAt,
     String? thumbnailPath,
     int? fileSizeBytes,
@@ -29,8 +31,8 @@ class RecentFile {
   }) {
     return RecentFile(
       id: id,
-      name: name,
-      uri: uri,
+      name: name ?? this.name,
+      uri: uri ?? this.uri,
       fileExtension: fileExtension,
       lastOpenedAt: lastOpenedAt ?? this.lastOpenedAt,
       thumbnailPath: thumbnailPath ?? this.thumbnailPath,

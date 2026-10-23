@@ -106,9 +106,19 @@ class NativeDwgBridge(private val context: Context) {
             if (source.exists()) return source
         }
 
-        // If a permanent copy already exists from a previous session, use it.
+        // If a permanent copy already exists from a previous session, use it —
+        // UNLESS the source is a readable local file that has changed since the
+        // copy was made (e.g. the bundled sample re-seeded over the same path):
+        // then fall through and refresh the copy, or the old bytes would keep
+        // being served forever.
         if (permanent.exists() && permanent.length() > 0) {
-            return permanent
+            val source = if (!uriValue.startsWith("content://")) {
+                File(if (uriValue.startsWith("file://")) Uri.parse(uriValue).path ?: uriValue else uriValue)
+            } else null
+            val sourceChanged = source != null && source.exists() &&
+                (source.lastModified() > permanent.lastModified() ||
+                    source.length() != permanent.length())
+            if (!sourceChanged) return permanent
         }
 
         if (uriValue.startsWith("content://")) {

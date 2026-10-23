@@ -113,6 +113,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Rebuild the WHOLE screen on controller changes — the language setting
+    // loads asynchronously, and without this only the Consumer subtree picked
+    // up the new language, leaving the header/nav half in the old one.
+    context.watch<AppController>();
     return Scaffold(
       extendBody: true,
       body: ColoredBox(

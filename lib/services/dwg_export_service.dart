@@ -222,15 +222,22 @@ Future<Uint8List> _renderVectorPdf(_PdfJob job) async {
     if (mm <= 0.25) return defaultLineW;
     if (realPaper) {
       // A real sheet plots TRUE lineweights, like AutoCAD: 0.35mm ≈ 1pt.
-      return (mm * _ptPerMm).clamp(defaultLineW, 5.67); // cap 2mm
+      // Capped at 0.6mm — heavier pens swallow small details (door handles,
+      // fixtures) whole at 1:100-and-up scales.
+      return (mm * _ptPerMm).clamp(defaultLineW, 1.7); // cap 0.6mm
     }
     // The 8000pt page makes a true-scale plot width (mm×2.835 ≈ 1pt) almost
-    // invisible, so use a heavier multiplier for clear hierarchy (0.35mm wall
-    // ≈ 2.5pt), capped so it never blobs.
-    return (mm * 7.0).clamp(defaultLineW, 5.0);
+    // invisible, so use a heavier multiplier for hierarchy (0.35mm wall
+    // ≈ 1.75pt), capped low enough that small geometry never blobs.
+    return (mm * 5.0).clamp(defaultLineW, 3.0);
   }
 
   g.setLineWidth(defaultLineW);
+  // Round caps and joins, like a plotter pen: the geometry arrives as
+  // independent segments, and the default butt caps leave a visible notch
+  // wherever two thick segments meet at a corner.
+  g.setLineCap(PdfLineCap.round);
+  g.setLineJoin(PdfLineJoin.round);
 
   // ── Solid hatch fills (even-odd) ──
   for (final fill in scene.fills) {
@@ -286,7 +293,11 @@ Future<Uint8List> _renderVectorPdf(_PdfJob job) async {
     }
     if (!any) return;
     g.setStrokeColor(ink);
-    g.setLineWidth(lineWidthForLayer(DwgScene.batchLayer(key)));
+    // Hatch pattern lines ALWAYS plot with a thin pen: applying the layer's
+    // lineweight to closely-spaced hatching merges it into solid black.
+    g.setLineWidth(DwgScene.batchIsHatch(key)
+        ? (realPaper ? 0.25 : 0.5)
+        : lineWidthForLayer(DwgScene.batchLayer(key)));
     g.strokePath();
   });
 

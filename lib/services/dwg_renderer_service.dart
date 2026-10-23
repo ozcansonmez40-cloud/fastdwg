@@ -10,7 +10,9 @@ import '../data/models/recent_file.dart';
 /// them on the UI isolate freezes the loading spinner for many seconds.
 DwgScene _parseSceneBytes(Uint8List bytes) => DwgScene.fromBytes(bytes);
 
-enum DwgRenderStatus { idle, loading, ready, unsupported, error }
+/// [stuck]: the native parse queue is jammed behind a wedged parse — only an
+/// app restart clears it (the viewer offers a one-tap restart for this).
+enum DwgRenderStatus { idle, loading, ready, unsupported, error, stuck }
 
 class DwgRendererState {
   const DwgRendererState({
@@ -47,6 +49,10 @@ class DwgRendererService {
         'prepareDrawing',
         {'uri': file.uri, 'name': file.name},
       );
+
+      if (result?['status'] == 'stuck') {
+        return const DwgRendererState(status: DwgRenderStatus.stuck);
+      }
 
       onStage?.call('scene');
       final scene = await _readScene(result?['scenePath']);
@@ -106,6 +112,16 @@ class DwgRendererService {
         status: DwgRenderStatus.error,
         message: error.message ?? 'Native DWG renderer failed.',
       );
+    }
+  }
+
+  /// Kills and relaunches the app — the only way to clear a native parse
+  /// thread wedged inside LibreDWG. Called from the stuck / slow-load UIs.
+  static Future<void> restartApp() async {
+    try {
+      await _channel.invokeMethod('restartApp');
+    } catch (_) {
+      // The process is about to die anyway; nothing sensible to report.
     }
   }
 

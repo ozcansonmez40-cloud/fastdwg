@@ -25,6 +25,20 @@ class MainActivity : FlutterActivity() {
     // previous one instead of colliding.
     private val parseExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
+    // When a parse wedges inside native code (seen on 32-bit devices under
+    // memory pressure), the single-thread queue is jammed forever: every later
+    // open waits behind it until the process dies, which users "fix" by
+    // rebooting the phone. Track when the running parse started so new
+    // requests can detect the jam and offer an in-app restart instead.
+    @Volatile private var activeParseStartMs = 0L
+
+    companion object {
+        /// A parse still running after this long is treated as wedged when the
+        /// user tries to open ANOTHER drawing (legit big files finish sooner,
+        /// and the check only fires on a second open attempt).
+        private const val PARSE_STUCK_MS = 180_000L
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
@@ -35,6 +49,55 @@ class MainActivity : FlutterActivity() {
         methodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "getInitialDrawing" -> result.success(currentDrawingIntentPayload())
+                "shareDrawing" -> {
+                    val path = call.argument<String>("path")
+                    val name = call.argument<String>("name")
+                    if (path.isNullOrBlank() || name.isNullOrBlank()) {
+                        result.error("FASTDWG_SHARE", "path/name missing", null)
+                        return@setMethodCallHandler
+                    }
+                    // Copy off the main thread (drawings can be 50MB+), then
+                    // hand the chooser a plain octet-stream so messaging apps
+                    // store a type they are willing to re-open.
+                    parseExecutor.execute {
+                        try {
+                            val shareDir = File(cacheDir, "fastdwg_share").apply { mkdirs() }
+                            shareDir.listFiles()?.forEach { it.delete() }
+                            // WhatsApp decides open-ability from the LAST file
+                            // extension it sees: ".dwg" is unknown → "can't be
+                            // opened", ".bin" is known → tap opens a chooser.
+                            // So the outgoing copy is named "<name>.dwg.bin";
+                            // the receiving side (below) strips the ".bin".
+                            val wrappedName =
+                                if (name.lowercase().endsWith(".dwg") ||
+                                    name.lowercase().endsWith(".dxf")
+                                ) "$name.bin" else name
+                            val dest = File(shareDir, wrappedName)
+                            File(path).inputStream().use { input ->
+                                dest.outputStream().use { output -> input.copyTo(output) }
+                            }
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                this, "$packageName.shareprovider", dest
+                            )
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "application/octet-stream"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                clipData = android.content.ClipData.newUri(
+                                    contentResolver, wrappedName, uri
+                                )
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            Handler(Looper.getMainLooper()).post {
+                                startActivity(Intent.createChooser(send, wrappedName))
+                                result.success(true)
+                            }
+                        } catch (e: Exception) {
+                            Handler(Looper.getMainLooper()).post {
+                                result.error("FASTDWG_SHARE", e.message, null)
+                            }
+                        }
+                    }
+                }
                 "prepareDrawing" -> {
                     val uri = call.argument<String>("uri")
                     val name = call.argument<String>("name")
@@ -48,14 +111,60 @@ class MainActivity : FlutterActivity() {
                         return@setMethodCallHandler
                     }
 
+                    val runningSince = activeParseStartMs
+                    if (runningSince != 0L &&
+                        System.currentTimeMillis() - runningSince > PARSE_STUCK_MS
+                    ) {
+                        // The queue is jammed behind a wedged parse — queueing
+                        // this request would hang it too. Tell Flutter so it
+                        // can offer a one-tap app restart.
+                        result.success(mapOf(
+                            "status" to "stuck",
+                            "message" to "A previous drawing is stuck opening."
+                        ))
+                        return@setMethodCallHandler
+                    }
+
                     val probe = nativeBridge.probe()
                     // Serialised on a single thread so parses never overlap.
                     parseExecutor.execute {
-                        val parseResult = nativeBridge.prepareDrawing(uri, name ?: "drawing.dwg")
-                        Handler(Looper.getMainLooper()).post {
-                            result.success(parseResult + ("nativeProbe" to probe))
+                        activeParseStartMs = System.currentTimeMillis()
+                        try {
+                            val parseResult = nativeBridge.prepareDrawing(uri, name ?: "drawing.dwg")
+                            Handler(Looper.getMainLooper()).post {
+                                result.success(parseResult + ("nativeProbe" to probe))
+                            }
+                        } finally {
+                            activeParseStartMs = 0L
                         }
                     }
+                }
+                "restartApp" -> {
+                    // Killing the process is the ONLY way to clear a native
+                    // parse thread wedged inside LibreDWG (it can't be
+                    // interrupted safely). Schedule a relaunch, then exit.
+                    val launch = packageManager.getLaunchIntentForPackage(packageName)
+                    if (launch != null) {
+                        launch.addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                        )
+                        val pi = android.app.PendingIntent.getActivity(
+                            this, 7391, launch,
+                            android.app.PendingIntent.FLAG_CANCEL_CURRENT or
+                                android.app.PendingIntent.FLAG_IMMUTABLE
+                        )
+                        val am = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
+                        am.set(
+                            android.app.AlarmManager.RTC,
+                            System.currentTimeMillis() + 400,
+                            pi
+                        )
+                    }
+                    result.success(true)
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        finishAffinity()
+                        Runtime.getRuntime().exit(0)
+                    }, 250)
                 }
                 else -> result.notImplemented()
             }
@@ -103,7 +212,18 @@ class MainActivity : FlutterActivity() {
             ?: firstMultipleStream
             ?: currentIntent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
             ?: return null
-        val metadata = readUriMetadata(data)
+        val rawMetadata = readUriMetadata(data)
+        // Drawings shared from FastDWG travel as "<name>.dwg.bin" so WhatsApp
+        // agrees to open them (see shareDrawing); unwrap that suffix here so
+        // the drawing keeps its real name and extension.
+        val unwrappedName = rawMetadata.name.let {
+            val lower = it.lowercase()
+            if (lower.endsWith(".bin") &&
+                (lower.removeSuffix(".bin").endsWith(".dwg") ||
+                    lower.removeSuffix(".bin").endsWith(".dxf"))
+            ) it.dropLast(4) else it
+        }
+        val metadata = rawMetadata.copy(name = unwrappedName)
         val ext = metadata.name.substringAfterLast('.', "dwg").lowercase()
         val persistentPath = copyIntentUriToCache(data, metadata.name) ?: return mapOf(
             "uri" to "",

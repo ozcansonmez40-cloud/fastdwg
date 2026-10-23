@@ -657,7 +657,11 @@ void _paintDwgScene(
     if (w == 0) return;
     paint.color = dwgEntityColor(DwgScene.batchColor(key), AppColors.accentPrimary,
         monochrome: monochrome, backgroundIsWhite: backgroundIsWhite);
-    paint.strokeWidth = fast ? strokeWidth : widthForLayer(DwgScene.batchLayer(key));
+    // Hatch pattern lines keep the base (thin) stroke: a layer lineweight on
+    // dense hatching fuses the pattern into a solid blob on screen too.
+    paint.strokeWidth = fast || DwgScene.batchIsHatch(key)
+        ? strokeWidth
+        : widthForLayer(DwgScene.batchLayer(key));
     canvas.drawRawPoints(
       ui.PointMode.lines,
       Float32List.view(pts.buffer, 0, w),
@@ -1185,12 +1189,24 @@ class _SnapIndex {
   }
 }
 
-/// A photo pinned to a model-space point, for drawing the marker and hit-testing
-/// taps. Kept lightweight (no image data) — the viewer owns the full records.
+/// A photo or text note pinned to a model-space point, for drawing the marker
+/// and hit-testing taps. Kept lightweight (no image/text data) — the viewer
+/// owns the full records. [isPhoto] picks the marker glyph (camera vs. note).
 class PhotoMarker {
-  const PhotoMarker(this.id, this.point);
+  const PhotoMarker(this.id, this.point, {this.isPhoto = true});
   final String id;
   final Offset point; // model coords
+  final bool isPhoto;
+
+  @override
+  bool operator ==(Object other) =>
+      other is PhotoMarker &&
+      other.id == id &&
+      other.point == point &&
+      other.isPhoto == isPhoto;
+
+  @override
+  int get hashCode => Object.hash(id, point, isPhoto);
 }
 
 class DwgViewport extends StatelessWidget {
@@ -1228,6 +1244,7 @@ class DwgViewport extends StatelessWidget {
     this.photoMode = false,
     this.onPhotoPlace,
     this.onPhotoTap,
+    this.onPhotoLongPress,
     this.freezeSignal,
   });
 
@@ -1250,8 +1267,14 @@ class DwgViewport extends StatelessWidget {
   /// Called with the model-space point where a new photo should be placed.
   final ValueChanged<Offset>? onPhotoPlace;
 
-  /// Called with a photo id when its marker is tapped (to open/delete it).
-  final ValueChanged<String>? onPhotoTap;
+  /// Called with the ids of every marker within tap range (nearest first) when
+  /// one is tapped — more than one id means overlapping pins and the caller
+  /// should let the user pick which to open.
+  final ValueChanged<List<String>>? onPhotoTap;
+
+  /// Called like [onPhotoTap] but for a long-press on a marker — the quick
+  /// path for deleting a pin without opening it.
+  final ValueChanged<List<String>>? onPhotoLongPress;
 
   /// Whether the active sub-tool captures taps. When false (panel still open
   /// but no sub-tool armed) a tap SELECTS an existing shape instead of drawing,
@@ -1378,6 +1401,7 @@ class DwgViewport extends StatelessWidget {
                       photoMode: photoMode,
                       onPhotoPlace: onPhotoPlace,
                       onPhotoTap: onPhotoTap,
+                      onPhotoLongPress: onPhotoLongPress,
                       freezeSignal: freezeSignal,
                     ),
               ),
@@ -1469,13 +1493,15 @@ class _InteractiveDwgCanvas extends StatefulWidget {
     this.photoMode = false,
     this.onPhotoPlace,
     this.onPhotoTap,
+    this.onPhotoLongPress,
     this.freezeSignal,
   });
 
   final List<PhotoMarker> photos;
   final bool photoMode;
   final ValueChanged<Offset>? onPhotoPlace;
-  final ValueChanged<String>? onPhotoTap;
+  final ValueChanged<List<String>>? onPhotoTap;
+  final ValueChanged<List<String>>? onPhotoLongPress;
   final ValueListenable<int>? freezeSignal;
 
   final DwgScene scene;
@@ -2116,21 +2142,20 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
     _persistAnnotations();
   }
 
-  // Id of a photo marker within tap range of a screen point, or null.
-  String? _photoNear(Offset pos) {
+  // Ids of every marker within tap range of a screen point, nearest first —
+  // overlapping pins all get reported so the caller can offer a choice.
+  List<String> _photosNear(Offset pos) {
     final t = _transform;
-    if (t == null || widget.photos.isEmpty) return null;
-    var bestD2 = 28.0 * 28.0;
-    String? id;
+    if (t == null || widget.photos.isEmpty) return const [];
+    const maxD2 = 28.0 * 28.0;
+    final hits = <(double, String)>[];
     for (final ph in widget.photos) {
       final sp = t.toScreen(ph.point.dx, ph.point.dy);
       final d2 = (sp - pos).distanceSquared;
-      if (d2 <= bestD2) {
-        bestD2 = d2;
-        id = ph.id;
-      }
+      if (d2 <= maxD2) hits.add((d2, ph.id));
     }
-    return id;
+    hits.sort((a, b) => a.$1.compareTo(b.$1));
+    return [for (final h in hits) h.$2];
   }
 
   void _handleCanvasTap(Offset pos) {
@@ -2148,18 +2173,23 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
       }
       return;
     }
-    // Photo mode: EVERY tap drops a new pin (so you can add many in a row).
-    // Pin viewing is handled below only when not placing.
+    // Photo mode: a tap on an EXISTING pin opens it (so it can be viewed or
+    // deleted without leaving the mode); a tap on empty space drops a new pin.
     if (widget.photoMode) {
+      final pids = _photosNear(pos);
+      if (pids.isNotEmpty) {
+        widget.onPhotoTap?.call(pids);
+        return;
+      }
       final t = _transform;
       if (t != null) widget.onPhotoPlace?.call(t.toModel(pos));
       return;
     }
     // Otherwise a tap on a photo marker opens it (when no sub-tool is armed).
     if (!widget.armed) {
-      final pid = _photoNear(pos);
-      if (pid != null) {
-        widget.onPhotoTap?.call(pid);
+      final pids = _photosNear(pos);
+      if (pids.isNotEmpty) {
+        widget.onPhotoTap?.call(pids);
         return;
       }
     }
@@ -2346,7 +2376,16 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
           // delete it. Only export-rectangle mode owns taps exclusively.
           onLongPressStart: widget.exportSelectMode
               ? null
-              : (details) => _selectShapeNear(details.localPosition),
+              : (details) {
+                  // A long-press on a photo/note pin is the quick delete path;
+                  // otherwise it keeps its shape-select behaviour.
+                  final pids = _photosNear(details.localPosition);
+                  if (pids.isNotEmpty && widget.onPhotoLongPress != null) {
+                    widget.onPhotoLongPress!(pids);
+                    return;
+                  }
+                  _selectShapeNear(details.localPosition);
+                },
           onTapUp: widget.exportSelectMode
               ? null
               : (details) => _handleCanvasTap(details.localPosition),
@@ -2526,7 +2565,7 @@ class _InteractiveDwgCanvasState extends State<_InteractiveDwgCanvas>
                     insUnits: widget.insUnits,
                     focusHighlight: _focusHighlight,
                     focusFlash: _focusFlash,
-                    photoPoints: [for (final ph in widget.photos) ph.point],
+                    photoMarkers: widget.photos,
                   ),
                   child: const SizedBox.expand(),
                 ),
@@ -2927,7 +2966,7 @@ class _MeasureOverlayPainter extends CustomPainter {
     required this.insUnits,
     required this.focusHighlight,
     required this.focusFlash,
-    required this.photoPoints,
+    required this.photoMarkers,
   });
 
   final DwgScene scene;
@@ -2943,7 +2982,7 @@ class _MeasureOverlayPainter extends CustomPainter {
   final int insUnits;
   final Offset? focusHighlight;
   final int focusFlash;
-  final List<Offset> photoPoints; // model coords of pinned photos
+  final List<PhotoMarker> photoMarkers; // pinned photos/notes (model coords)
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -2952,7 +2991,7 @@ class _MeasureOverlayPainter extends CustomPainter {
     if (measurements.isNotEmpty) {
       _paintMeasure(canvas, transform.toScreen, size);
     }
-    if (photoPoints.isNotEmpty) {
+    if (photoMarkers.isNotEmpty) {
       _paintPhotoPins(canvas, transform.toScreen, size);
     }
     // Flashing ring at a "zoom to search result" target.
@@ -2971,17 +3010,21 @@ class _MeasureOverlayPainter extends CustomPainter {
     }
   }
 
-  // Draws a camera pin at each pinned photo's model point, numbered in order.
+  // Draws a pin at each photo/note's model point, numbered in order: photos
+  // get an amber camera pin, text notes a teal sticky-note pin.
   void _paintPhotoPins(
       Canvas canvas, Offset Function(double, double) map, Size size) {
+    const noteColor = Color(0xFF31E0C8);
     final white = Paint()..color = Colors.white;
-    for (var i = 0; i < photoPoints.length; i++) {
-      final p = map(photoPoints[i].dx, photoPoints[i].dy);
+    for (var i = 0; i < photoMarkers.length; i++) {
+      final m = photoMarkers[i];
+      final p = map(m.point.dx, m.point.dy);
       if (p.dx < -30 || p.dx > size.width + 30 || p.dy < -30 || p.dy > size.height + 30) {
         continue;
       }
+      final fill = m.isPhoto ? commentColor : noteColor;
       canvas.drawCircle(p + const Offset(0, 1), 13, Paint()..color = const Color(0x55000000));
-      canvas.drawCircle(p, 13, Paint()..color = commentColor);
+      canvas.drawCircle(p, 13, Paint()..color = fill);
       canvas.drawCircle(
         p,
         13,
@@ -2990,15 +3033,31 @@ class _MeasureOverlayPainter extends CustomPainter {
           ..strokeWidth = 2
           ..color = Colors.white,
       );
-      // Camera glyph: body + viewfinder bump + lens.
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(
-            Rect.fromCenter(center: p, width: 14, height: 9), const Radius.circular(2)),
-        white,
-      );
-      canvas.drawRect(
-          Rect.fromCenter(center: p + const Offset(0, -5.5), width: 5, height: 3), white);
-      canvas.drawCircle(p, 2.6, Paint()..color = commentColor);
+      if (m.isPhoto) {
+        // Camera glyph: body + viewfinder bump + lens.
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromCenter(center: p, width: 14, height: 9), const Radius.circular(2)),
+          white,
+        );
+        canvas.drawRect(
+            Rect.fromCenter(center: p + const Offset(0, -5.5), width: 5, height: 3), white);
+        canvas.drawCircle(p, 2.6, Paint()..color = fill);
+      } else {
+        // Sticky-note glyph: page + text lines.
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromCenter(center: p, width: 11, height: 13), const Radius.circular(2)),
+          white,
+        );
+        final line = Paint()
+          ..color = fill
+          ..strokeWidth = 1.6;
+        for (var dy = -3.0; dy <= 3.0; dy += 3.0) {
+          canvas.drawLine(
+              p + Offset(-3.2, dy), p + Offset(3.2, dy), line);
+        }
+      }
       // Index badge (top-right).
       final tp = TextPainter(
         text: TextSpan(
@@ -3318,6 +3377,6 @@ class _MeasureOverlayPainter extends CustomPainter {
         oldDelegate.insUnits != insUnits ||
         oldDelegate.focusHighlight != focusHighlight ||
         oldDelegate.focusFlash != focusFlash ||
-        !listEquals(oldDelegate.photoPoints, photoPoints);
+        !listEquals(oldDelegate.photoMarkers, photoMarkers);
   }
 }

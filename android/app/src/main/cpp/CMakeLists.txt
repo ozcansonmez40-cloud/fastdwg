@@ -33,6 +33,13 @@ if(EXISTS "${LIBREDWG_SOURCE_DIR}/CMakeLists.txt")
     )
 
     set(FASTDWWG_LIBREDWG_TARGET redwg)
+
+    # 32-bit ARM raises SIGBUS/BUS_ADRALN on LibreDWG's raw 8-byte double
+    # loads (bit_read_RD fast path); this define switches bits.c to its
+    # alignment-safe read paths. 64-bit builds are left untouched.
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        target_compile_definitions(redwg PRIVATE HAVE_ALIGNED_ACCESS_REQUIRED=1)
+    endif()
 elseif(EXISTS "${LIBREDWG_INCLUDE_DIR}/dwg.h" AND EXISTS "${LIBREDWG_LIBRARY_PATH}")
     add_library(redwg SHARED IMPORTED)
     set_target_properties(

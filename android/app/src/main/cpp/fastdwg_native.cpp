@@ -1398,7 +1398,9 @@ static void render_hatch(std::ostringstream& lj, Dwg_Entity_HATCH* e,
           // Continuous pattern line.
           auto [x1, y1] = xform_pt(xf, px + dirx * t0, py + diry * t0);
           auto [x2, y2] = xform_pt(xf, px + dirx * t1, py + diry * t1);
-          append_line_solid(lj, x1, y1, x2, y2, color, lc);
+          // Hatch pattern lines carry a flag in the color's spare top byte so
+          // the viewer/plotter can always draw them with a thin pen.
+          append_line_solid(lj, x1, y1, x2, y2, color | 0x01000000u, lc);
           if (lc > (kMaxLines * 17) / 20) return;
           if (--fam_budget <= 0) { fam_done = true; ++g_hatch_budget; }
           continue;
@@ -1422,7 +1424,9 @@ static void render_hatch(std::ostringstream& lj, Dwg_Entity_HATCH* e,
             auto [x1, y1] = xform_pt(xf, px + dirx * t, py + diry * t);
             auto [x2, y2] =
                 xform_pt(xf, px + dirx * (t + step), py + diry * (t + step));
-            append_line_solid(lj, x1, y1, x2, y2, color, lc);
+            // Hatch pattern lines carry a flag in the color's spare top byte so
+          // the viewer/plotter can always draw them with a thin pen.
+          append_line_solid(lj, x1, y1, x2, y2, color | 0x01000000u, lc);
             if (lc > (kMaxLines * 17) / 20) return;
             if (--fam_budget <= 0) { fam_done = true; ++g_hatch_budget; }
           }

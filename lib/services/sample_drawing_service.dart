@@ -23,8 +23,11 @@ class SampleDrawingService {
   static const String _assetPath = 'assets/samples/demo.dwg';
   // Bump the suffix if the bundled drawing is ever replaced, so existing
   // installs re-seed the new file instead of keeping the old copy.
-  static const String _seededKey = 'sample_seeded_v5';
-  static const String _sampleId = 'builtin_sample_v1';
+  static const String _seededKey = 'sample_seeded_v6';
+
+  /// Recents-entry id of the bundled sample. The UI hides destructive actions
+  /// for this entry — the sample ships with the app and must stay.
+  static const String sampleId = 'builtin_sample_v1';
   static const String _sampleName = 'Sample Project.dwg';
 
   /// On first launch, writes the bundled drawing into app storage and returns a
@@ -51,7 +54,7 @@ class SampleDrawingService {
       await _preferences.setBool(_seededKey, true);
 
       return RecentFile(
-        id: _sampleId,
+        id: sampleId,
         name: _sampleName,
         uri: file.path,
         fileExtension: 'dwg',

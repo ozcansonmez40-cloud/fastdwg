@@ -7,6 +7,7 @@ import '../../core/l10n/l10n.dart';
 
 import '../../data/models/app_settings.dart';
 import '../../data/models/recent_file.dart';
+import '../../data/repositories/photos_repository.dart';
 import '../../data/repositories/recent_files_repository.dart';
 import '../../data/models/dwg_scene.dart';
 import '../../data/repositories/settings_repository.dart';
@@ -150,6 +151,51 @@ class AppController extends ChangeNotifier {
     await _thumbnailService.remove(file.id);
   }
 
+  /// Renames the drawing: the file on disk too when [file.uri] is a plain
+  /// local path (content:// sources only get their display name updated).
+  /// The extension is preserved so a renamed DWG stays openable.
+  Future<void> renameRecentFile(RecentFile file, String newName) async {
+    var name = newName.trim();
+    if (name.isEmpty || name == file.name) return;
+    if (!name.toLowerCase().endsWith('.${file.fileExtension}')) {
+      name = '$name.${file.fileExtension}';
+    }
+    var uri = file.uri;
+    try {
+      final f = File(uri);
+      if (f.existsSync()) {
+        final safe = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+        final dest = '${f.parent.path}${Platform.pathSeparator}$safe';
+        if (dest != uri && !File(dest).existsSync()) {
+          f.renameSync(dest);
+          uri = dest;
+        }
+      }
+    } catch (_) {
+      // Disk rename failed (read-only location, etc.) — still rename the entry.
+    }
+    _recentFiles = _recentFiles
+        .map((item) =>
+            item.id == file.id ? item.copyWith(name: name, uri: uri) : item)
+        .toList();
+    await _recentFilesRepository.saveRecentFiles(_recentFiles);
+    _recentFiles = _recentFilesRepository.loadRecentFiles();
+    notifyListeners();
+  }
+
+  /// Deletes the drawing itself (when it lives on a local path) and every
+  /// trace of it: recents entry, thumbnail and attached photo notes.
+  Future<void> deleteRecentFile(RecentFile file) async {
+    try {
+      final f = File(file.uri);
+      if (f.existsSync()) f.deleteSync();
+    } catch (_) {
+      // Best-effort: a content:// source can't be deleted from here.
+    }
+    await PhotosRepository().clearForFile(file.id);
+    await removeRecentFile(file);
+  }
+
   /// Renders a preview thumbnail for [file] from its parsed [scene] (once) and
   /// stores the path on the recent entry. Called by the viewer after a drawing
   /// finishes loading. A no-op if the file already has a usable thumbnail.
@@ -193,9 +239,84 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _handleIncomingDrawing(RecentFile file) async {
+    // If this exact drawing is already in Recents (same bytes — e.g. a file
+    // we shared over WhatsApp coming back, or the same project sent twice),
+    // open the EXISTING entry instead of a fresh copy: its name, measurements
+    // and photo pins all come along, and no duplicate row is created.
+    final match = await _findExistingCopy(file);
+    if (match != null) {
+      try {
+        File(file.uri).deleteSync();
+      } catch (_) {
+        // Best-effort cleanup of the redundant cache copy.
+      }
+      await addOrRefreshRecentFile(match);
+      _pendingIncomingFile = match;
+      notifyListeners();
+      return;
+    }
     await addOrRefreshRecentFile(file);
     _pendingIncomingFile = file;
     notifyListeners();
+  }
+
+  /// Recents entry whose stored file is byte-identical to [incoming], or null.
+  /// Cheap check: equal length + equal first/last 64KB — copies of a shared
+  /// drawing are byte-identical, and length collisions among different DWGs
+  /// are already rare.
+  Future<RecentFile?> _findExistingCopy(RecentFile incoming) async {
+    final File inFile;
+    final int inLen;
+    try {
+      inFile = File(incoming.uri);
+      if (!inFile.existsSync()) return null;
+      inLen = inFile.lengthSync();
+    } catch (_) {
+      return null;
+    }
+    for (final existing in _recentFiles) {
+      var p = existing.uri;
+      if (p.startsWith('content://')) continue;
+      if (p.startsWith('file://')) p = Uri.parse(p).toFilePath();
+      if (p == incoming.uri) continue;
+      try {
+        final ef = File(p);
+        if (!ef.existsSync() || ef.lengthSync() != inLen) continue;
+        if (_sameContent(inFile, ef, inLen)) return existing;
+      } catch (_) {
+        // Unreadable entry — skip it.
+      }
+    }
+    return null;
+  }
+
+  static bool _sameContent(File a, File b, int len) {
+    const chunk = 64 * 1024;
+    bool equalAt(int start, int count) {
+      final ra = a.openSync();
+      final rb = b.openSync();
+      try {
+        ra.setPositionSync(start);
+        rb.setPositionSync(start);
+        final ba = ra.readSync(count);
+        final bb = rb.readSync(count);
+        if (ba.length != bb.length) return false;
+        for (var i = 0; i < ba.length; i++) {
+          if (ba[i] != bb[i]) return false;
+        }
+        return true;
+      } finally {
+        ra.closeSync();
+        rb.closeSync();
+      }
+    }
+
+    final head = len < chunk ? len : chunk;
+    if (!equalAt(0, head)) return false;
+    if (len > chunk) {
+      if (!equalAt(len - chunk, chunk)) return false;
+    }
+    return true;
   }
 
   Future<void> togglePinned(RecentFile file) async {

@@ -61,6 +61,7 @@ android/app/.cxx/
 *.timing
 tool/*.png
 screen_now.png
+scratch_home.png
 .backup_pre_lineweight/
 third_party/libredwg/source/
 tool/last_scene.bin
